@@ -69,7 +69,7 @@ class ToastWidget(QFrame):
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.label = QLabel(self)
-        self.label.setWordWrap(True)
+        self.label.setWordWrap(False)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.main_layout.addWidget(self.label)
 
@@ -104,7 +104,10 @@ class ToastWidget(QFrame):
         self._is_action_mode = False
         self._clear_action_buttons()
         self.close_btn.hide()
-        self.label.setTextFormat(Qt.TextFormat.RichText)
+        if "<" in message and ">" in message:
+            self.label.setTextFormat(Qt.TextFormat.RichText)
+        else:
+            self.label.setTextFormat(Qt.TextFormat.PlainText)
         self.label.setText(message)
 
         if toast_type == ToastType.ERROR:
@@ -149,7 +152,10 @@ class ToastWidget(QFrame):
         self._clear_action_buttons()
         self.close_btn.show()
 
-        self.label.setTextFormat(Qt.TextFormat.RichText)
+        if "<" in message and ">" in message:
+            self.label.setTextFormat(Qt.TextFormat.RichText)
+        else:
+            self.label.setTextFormat(Qt.TextFormat.PlainText)
         self.label.setText(message)
 
         for item in buttons:
@@ -221,9 +227,16 @@ class ToastWidget(QFrame):
             return
 
         max_w = int(parent_widget.width() * 0.92)
-        self.setMinimumWidth(0)
-        self.setMaximumWidth(max_w)
+        self.label.setWordWrap(False)
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(max_w, 16777215)
         self.adjustSize()
+
+        # 만약 자연스러운 너비가 부모 창 한도를 초과하는 경우에만 줄바꿈 활성화
+        if self.sizeHint().width() > max_w:
+            self.label.setWordWrap(True)
+            self.setFixedWidth(max_w)
+            self.adjustSize()
 
         x = (parent_widget.width() - self.width()) // 2
         y = parent_widget.height() - self.height() - 24
