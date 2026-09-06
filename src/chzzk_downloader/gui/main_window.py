@@ -275,12 +275,13 @@ class MainWindow(QMainWindow):
             self._settings_window.refresh_status()
 
         if status == SessionStatus.EXPIRED:
-            # 사용자 지정 순서: [쿠키 설정] -> [네이버 로그인]
+            # 경고 아이콘 + 간소화된 문구 + 컴팩트 아이콘 버튼 (호버 시 툴팁)
             self.toast.show_action_toast(
-                "저장된 네이버 로그인 쿠키가 만료되었습니다.",
+                '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
+                '<span style="color: #ffffff;">쿠키를 갱신하세요</span>',
                 buttons=[
-                    ("쿠키 설정", "#3b82f6", self._on_settings_clicked),
-                    ("네이버 로그인", "#03c75a", self._on_naver_login_clicked),
+                    ("🍪", "#3b82f6", self._on_settings_clicked, "쿠키 설정"),
+                    ("N", "#03c75a", self._on_naver_login_clicked, "네이버 로그인"),
                 ],
             )
 
@@ -318,7 +319,7 @@ class MainWindow(QMainWindow):
         self._settings_window.activateWindow()
 
     def _on_cookies_updated(self) -> None:
-        """쿠키 저장/불러오기 시 로그인 필요 실패 카드 자동 재분석 (T0106 옵션 A)."""
+        """쿠키 저장/불러오기 시 로그인 필요 실패 카드 자동 재분석 (T0106 옵션 A: 불필요한 토스트 없이 침묵 자동 재분석)."""
         from chzzk_downloader.core.cookie_manager import has_valid_cookies
 
         if not has_valid_cookies():
@@ -331,12 +332,6 @@ class MainWindow(QMainWindow):
         ]
         if not failed_cards:
             return
-
-        self.toast.show_toast(
-            "쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다.",
-            ToastType.SUCCESS,
-            auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
-        )
 
         for card in failed_cards:
             card.status = TaskStatus.ANALYZING
@@ -488,8 +483,9 @@ class MainWindow(QMainWindow):
                 TaskStatus.READY,
             ):
                 self.toast.show_toast(
-                    "이미 추가한 작업입니다.",
-                    ToastType.ERROR,
+                    '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
+                    '<span style="color: #ffffff;">이미 추가한 작업입니다.</span>',
+                    ToastType.WARNING,
                     auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
                 )
                 return
@@ -591,7 +587,7 @@ class MainWindow(QMainWindow):
             or "forbidden" in err_lower
         ):
             status = TaskStatus.FAILED_LOGIN_REQUIRED
-            toast_msg = f"Login required; Please login: {raw_url}"
+            toast_msg = f"Login required; Please login\n{raw_url}"
         else:
             status = TaskStatus.FAILED_INVALID
             toast_msg = f"Invalid: {raw_url}"

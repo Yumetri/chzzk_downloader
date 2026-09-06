@@ -312,9 +312,8 @@ def test_main_window_auto_reanalyze_failed_login_cards_on_cookie_update(
         # 쿠키 갱신 이벤트 트리거
         main_window._on_cookies_updated()
 
-        # 재분석 안내 토스트 확인
-        assert main_window.toast.isHidden() is False
-        assert "로그인 필요 작업을 다시 분석합니다" in main_window.toast.label.text()
+        # T02 토스트는 침묵(미노출) 처리되고 백그라운드에서 자동 재분석 진행
+        assert main_window.toast.isHidden() is True
 
         # 카드가 ANALYZING을 거쳐 READY 상태로 전환되는지 대기
         qtbot.waitUntil(lambda: card.status == TaskStatus.READY, timeout=2000)

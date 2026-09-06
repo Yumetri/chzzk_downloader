@@ -18,6 +18,7 @@ class ToastType(Enum):
     SUCCESS = "success"
     ERROR = "error"
     WARNING = "warning"
+    INFO = "info"
 
 
 class ClickableCloseLabel(QLabel):
@@ -99,12 +100,17 @@ class ToastWidget(QFrame):
         """일반 토스트를 표시합니다."""
         self._is_action_mode = False
         self._clear_action_buttons()
+        self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setText(message)
 
-        if toast_type == ToastType.SUCCESS:
-            bg_style = "background-color: rgba(20, 20, 20, 215); border: 1px solid rgba(255, 255, 255, 0.2);"
+        if toast_type == ToastType.ERROR:
+            border_style = "border: 1px solid rgba(239, 68, 68, 0.5);"
+        elif toast_type == ToastType.WARNING:
+            border_style = "border: 1px solid rgba(245, 158, 11, 0.5);"
         else:
-            bg_style = "background-color: #C62828; border: none;"
+            border_style = "border: 1px solid rgba(255, 255, 255, 0.18);"
+
+        bg_style = f"background-color: rgba(20, 20, 20, 230); {border_style}"
 
         self.setStyleSheet(
             f"ToastWidget {{ {bg_style} border-radius: 8px; }}"
@@ -123,28 +129,56 @@ class ToastWidget(QFrame):
     def show_action_toast(
         self,
         message: str,
-        buttons: list[tuple[str, str, Callable[[], None]]],
+        buttons: list[
+            tuple[str, str, Callable[[], None]]
+            | tuple[str, str, Callable[[], None], str]
+        ],
     ) -> None:
         """액션 버튼이 포함된 인터랙티브 토스트를 표시합니다.
 
         Args:
             message: 표시할 안내 메시지.
-            buttons: (버튼명, 배경색, 클릭시 콜백함수) 튜플 목록.
+            buttons: (버튼명, 배경색, 클릭시 콜백함수, [선택적 툴팁]) 튜플 목록.
         """
         self._is_action_mode = True
         self._timer.stop()  # 사용자가 조작하기 전까지 자동 소멸 안 됨
         self._clear_action_buttons()
 
+        self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setText(message)
 
-        for label_text, color_code, callback in buttons:
+        for item in buttons:
+            label_text = item[0]
+            color_code = item[1]
+            callback = item[2]
+            tooltip_text = item[3] if len(item) > 3 else ""
+
+            # 기본 툴팁 추론
+            if not tooltip_text:
+                if label_text == "🍪":
+                    tooltip_text = "쿠키 설정"
+                elif label_text == "N":
+                    tooltip_text = "네이버 로그인"
+
             btn = QPushButton(label_text, self)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(
-                f"QPushButton {{ background-color: {color_code}; color: white; border: none; "
-                f"border-radius: 4px; padding: 4px 10px; font-size: 12px; font-weight: bold; }}"
-                f"QPushButton:hover {{ opacity: 0.9; }}"
-            )
+            if tooltip_text:
+                btn.setToolTip(tooltip_text)
+
+            # 1~2자 아이콘 형태인 경우 컴팩트한 사각 버튼 스타일 적용
+            if len(label_text) <= 2:
+                btn.setFixedSize(26, 24)
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {color_code}; color: white; border: none; "
+                    f"border-radius: 4px; font-size: 13px; font-weight: 900; padding: 0; }}"
+                    f"QPushButton:hover {{ opacity: 0.85; }}"
+                )
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {color_code}; color: white; border: none; "
+                    f"border-radius: 4px; padding: 4px 10px; font-size: 12px; font-weight: bold; }}"
+                    f"QPushButton:hover {{ opacity: 0.9; }}"
+                )
 
             def _make_handler(cb: Callable[[], None]) -> Callable[[], None]:
                 def _handler() -> None:
@@ -157,7 +191,7 @@ class ToastWidget(QFrame):
             self.btn_layout.addWidget(btn)
             self._action_buttons.append(btn)
 
-        bg_style = "background-color: rgba(30, 30, 30, 240); border: 1px solid #ef4444;"
+        bg_style = "background-color: rgba(20, 20, 20, 235); border: 1px solid rgba(245, 158, 11, 0.5);"
         self.setStyleSheet(
             f"ToastWidget {{ {bg_style} border-radius: 8px; }}"
             f"QLabel {{ color: white; font-size: 13px; font-weight: 500; }}"
@@ -173,8 +207,11 @@ class ToastWidget(QFrame):
         parent_widget = self.parentWidget()
         if parent_widget is None:
             return
-        max_width = max(320, int(parent_widget.width() * 0.9))
-        self.setMaximumWidth(max_width)
+
+        min_w = min(480, int(parent_widget.width() * 0.95))
+        max_w = max(min_w, int(parent_widget.width() * 0.95))
+        self.setMinimumWidth(min_w)
+        self.setMaximumWidth(max_w)
         self.adjustSize()
 
         x = (parent_widget.width() - self.width()) // 2

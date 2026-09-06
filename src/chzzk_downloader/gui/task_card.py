@@ -278,16 +278,20 @@ class TaskCardWidget(QFrame):
         auth_layout.setContentsMargins(0, 0, 0, 0)
         auth_layout.setSpacing(6)
 
-        self.cookie_btn = QPushButton("쿠키 설정", self.auth_container)
+        self.cookie_btn = QPushButton("🍪", self.auth_container)
+        self.cookie_btn.setFixedSize(24, 22)
+        self.cookie_btn.setToolTip("쿠키 설정")
         self.cookie_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cookie_btn.setStyleSheet(
-            "QPushButton { background-color: #3b82f6; color: white; border: none; border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
+            "QPushButton { background-color: #3b82f6; color: white; border: none; border-radius: 3px; font-size: 12px; }"
             "QPushButton:hover { background-color: #2563eb; }"
         )
-        self.login_btn = QPushButton("네이버 로그인", self.auth_container)
+        self.login_btn = QPushButton("N", self.auth_container)
+        self.login_btn.setFixedSize(24, 22)
+        self.login_btn.setToolTip("네이버 로그인")
         self.login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.login_btn.setStyleSheet(
-            "QPushButton { background-color: #03c75a; color: white; border: none; border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
+            "QPushButton { background-color: #03c75a; color: white; border: none; border-radius: 3px; font-size: 12px; font-weight: 900; }"
             "QPushButton:hover { background-color: #02b150; }"
         )
         self.cookie_btn.clicked.connect(self.request_open_cookies.emit)
@@ -527,9 +531,7 @@ class TaskCardWidget(QFrame):
         """동일 파일명 존재 시 처리 방법('overwrite', 'rename', 'cancel')을 묻는 대화상자를 띄웁니다."""
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Chzzk Downloader")
-        msg_box.setText(
-            f"이미 동일한 이름의 파일이 존재합니다:\n{filename}\n\n어떻게 처리하시겠습니까?"
-        )
+        msg_box.setText(f"이미 동일한 이름의 파일이 존재합니다:\n{filename}")
         overwrite_btn = msg_box.addButton("덮어쓰기", QMessageBox.ButtonRole.AcceptRole)
         rename_btn = msg_box.addButton("이름 변경", QMessageBox.ButtonRole.ActionRole)
         msg_box.addButton("취소", QMessageBox.ButtonRole.RejectRole)

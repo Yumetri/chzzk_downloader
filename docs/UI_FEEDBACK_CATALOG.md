@@ -25,13 +25,18 @@
   * 설명 문구: 줄바꿈(`\n`)을 적절히 활용하여 첫 줄에 핵심 질문, 둘째 줄에 부가 설명/영향 범위를 명확히 분리합니다.
 
 ### 2) 토스트 알림 (Toast Notification)
+* **배경 및 다크 테마 통일**:
+  * 모든 토스트는 시각적 피로도를 낮추고 일관성을 높이기 위해 **T01과 동일한 어두운 반투명 검은 배경 (`rgba(20, 20, 20, 230)`)**으로 통일합니다.
+  * 타입별 구분은 배경색이 아닌 **좌측 상태 아이콘(+, ⚠️, ✕)** 및 테두리 색상으로 정갈하게 표현합니다.
+* **가로 너비 및 한 줄 표시**:
+  * 긴 VOD URL이 어색하게 줄바꿈되지 않도록 토스트의 기본 너비를 넉넉하게 확장(최소 480px)하여 가로로 시원하게 한 줄로 표시합니다. (단, 로그인 필요 등 의도적인 개행이 포함된 경우는 줄바꿈 지원)
+* **경고성 토스트 공통 아이콘**:
+  * 중복 거부, 세션 만료 등 경고성 토스트에는 노란색 삼각형 느낌표 **`⚠️`** 아이콘을 공통 적용합니다.
+* **인증 버튼 아이콘화 및 툴팁**:
+  * 쿠키 설정 및 네이버 로그인 버튼은 긴 텍스트 대신 **`🍪`** (쿠키) 및 **`N`** (네이버) 컴팩트 사각 버튼(24x22px 또는 26x24px)으로 축약하고, 마우스 호버 시 툴팁(`쿠키 설정`, `네이버 로그인`)을 지원합니다.
 * **유형별 소멸 및 유지 정책**:
-  * **일반 성공/동작 안내 (초록/파랑)**: 2초 후 자동 페이드아웃 소멸 (`auto_dismiss_ms=2000`).
-  * **오류 및 실패 알림 (빨강)**: 중요한 실패 사유를 사용자가 충분히 인지할 수 있도록 사용자가 명시적으로 클릭하거나 새 요청이 시작될 때까지 유지 (단, 빠른 거부 토스트 등은 2초 후 자동 소멸 적용 가능).
-  * **인터랙티브 액션 토스트 (경고/안내)**: 사용자에게 조치 버튼(`[쿠키 설정]`, `[네이버 로그인]`, `[✕]`)을 제공하며, 조작 전까지 계속 유지.
-* **문체 및 어조**:
-  * 상태 안내형: **`~합니다.`**, **`~되었습니다.`** 평서문 종결.
-  * 오류/실패형: 군더더기 없이 원인을 직관적으로 전달하는 명료한 문체 (예: `지원하지 않는 URL`, `이미 추가한 작업입니다.`).
+  * **일반 안내/성공 (T01, T03, T04, T05)**: 2초 후 자동 페이드아웃 소멸 (`auto_dismiss_ms=2000`).
+  * **인터랙티브 액션 토스트 (T06)**: 사용자 조작 전까지 유지.
 
 ---
 
@@ -42,7 +47,7 @@
 | **M01** | 다운로드 중지 | **Chzzk Downloader** | `정말 중지하시겠습니까?` | `[확인(기본)]` / `[취소]` | Primary 파랑 (`#2563eb`) | T0109 | `TaskCardWidget._confirm_stop_dialog` |
 | **M02** | 작업 재다운로드 | **Chzzk Downloader** | `이미 추가한 작업입니다. 다시 다운로드하시겠습니까?` | `[확인(기본)]` / `[취소]` | Primary 파랑 (`#2563eb`) | T0109 | `MainWindow._confirm_redownload_dialog` |
 | **M03** | 쿠키 초기화 | **Chzzk Downloader** | `저장된 쿠키를 삭제하시겠습니까?` | `[확인(기본)]` / `[취소]` | Danger 빨강 (`#ef4444`) | T0106, T0108 | `SettingsWindow._on_clear_clicked` |
-| **M04** | 파일명 충돌 | **Chzzk Downloader** | `이미 동일한 이름의 파일이 존재합니다:\n{filename}\n\n어떻게 처리하시겠습니까?` | `[덮어쓰기]` / `[이름 변경(기본)]` / `[취소]` | Action 회색 + 포커스 | T0109 | `TaskCardWidget._prompt_duplicate_resolution` |
+| **M04** | 파일명 충돌 | **Chzzk Downloader** | `이미 동일한 이름의 파일이 존재합니다:\n{filename}` | `[덮어쓰기]` / `[이름 변경(기본)]` / `[취소]` | Action 회색 + 포커스 | T0109 | `TaskCardWidget._prompt_duplicate_resolution` |
 | **M05** | 쿠키 불러오기 결과 | **Chzzk Downloader** | `쿠키를 성공적으로 불러왔습니다.`<br>`쿠키 파일 형식이 올바르지 않습니다: {msg}` | `[확인(기본)]` | Info / Warning | T0106 | `SettingsWindow._on_import_clicked` |
 | **M06** | 쿠키 내보내기 결과 | **Chzzk Downloader** | `쿠키를 성공적으로 내보냈습니다.`<br>`쿠키 내보내기에 실패했습니다: {msg}` | `[확인(기본)]` | Info / Warning | T0106 | `SettingsWindow._on_export_clicked` |
 | **M07** | 폴더 권한 오류 | **Chzzk Downloader** | `선택한 폴더에 쓰기 권한이 없습니다:\n{path}\n\n다른 폴더를 선택해주세요.` | `[확인(기본)]` | Warning | T0108 | `SettingsWindow._on_choose_folder` |
@@ -55,12 +60,12 @@
 
 | ID | 카테고리 | 유형 (`ToastType`) | 표시 문구 (`message`) | 추가 요소 / 버튼 | 소멸 정책 | 관련 티켓 | 구현 위치 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **T01** | URL 추가 동작 | `ToastType.INFO` | `+ [URL]` (파란색 + 흰색) | 없음 (아이콘 오버레이) | 2초 자동 소멸 | T0102 | `MainWindow.toast` |
-| **T02** | 쿠키 재분석 안내 | `ToastType.SUCCESS` | `쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다.` | 없음 | 2초 자동 소멸 | T0106 | `MainWindow._on_cookies_updated` |
-| **T03** | 진행중 중복 거부 | `ToastType.ERROR` | `이미 추가한 작업입니다.` | 없음 | 2초 자동 소멸 | T0109 | `MainWindow._on_download_clicked` |
-| **T04** | 지원하지 않는 URL | `ToastType.ERROR` | `지원하지 않는 URL` | 없음 | 클릭/새요청 시 소멸 | T0102 | `MainWindow._on_download_clicked` |
-| **T05** | VOD 확인 실패 | `ToastType.ERROR` | `VOD 확인 실패: {error_msg}` | 없음 | 클릭/새요청 시 소멸 | T0102, T0103 | `MainWindow._on_vod_check_failed` |
-| **T06** | 쿠키 만료 경고 액션 | `ToastType.WARNING` | `저장된 네이버 쿠키가 만료되었습니다.` | `[쿠키 설정]` `[네이버 로그인]` `[✕]` | 사용자 조작 전까지 유지 | T0107 | `MainWindow.toast.show_action_toast` |
+| **T01** | URL 추가 동작 | `ToastType.INFO` / `SUCCESS` | `+ [URL]` (파란색 + 흰색, 한 줄 표시) | 없음 (가로 너비 확장) | 2초 자동 소멸 | T0102 | `MainWindow.toast` |
+| **T02** | 쿠키 재분석 | *(제거됨)* | *(백그라운드 침묵 자동 재분석으로 전환)* | 없음 | - | T0106 | `MainWindow._on_cookies_updated` |
+| **T03** | 진행중 중복 거부 | `ToastType.WARNING` | `⚠️ 이미 추가한 작업입니다.` | 노란색 경고 아이콘 | 2초 자동 소멸 | T0109 | `MainWindow._on_download_clicked` |
+| **T04** | 지원하지 않는 URL | `ToastType.ERROR` | `Invalid: {URL}` | 없음 | 2초 자동 소멸 | T0102 | `MainWindow._on_download_clicked` |
+| **T05** | VOD 확인 실패 | `ToastType.ERROR` | `Invalid: {URL}`<br>`Login required; Please login\n{URL}` | 줄바꿈 포맷 지원 | 2초 자동 소멸 | T0102, T0103 | `MainWindow._on_vod_check_failed` |
+| **T06** | 쿠키 만료 경고 액션 | `ToastType.WARNING` | `⚠️ 쿠키를 갱신하세요` | `[🍪 쿠키설정]` `[N 네이버로그인]` `[✕]` | 사용자 조작 전까지 유지 | T0107 | `MainWindow.toast.show_action_toast` |
 
 ---
 

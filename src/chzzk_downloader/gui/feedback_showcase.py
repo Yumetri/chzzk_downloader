@@ -69,37 +69,37 @@ class FeedbackShowcaseWindow(QMainWindow):
 
         self._add_btn(
             toast_layout,
-            "[T01] URL 추가 안내 토스트",
+            "[T01] URL 추가 토스트 (한 줄 URL)",
             self._demo_toast_add_url,
             "#2563eb",
         )
         self._add_btn(
             toast_layout,
-            "[T02] 쿠키 재분석 안내 토스트 (초록 성공)",
-            self._demo_toast_reanalyze_success,
-            "#059669",
-        )
-        self._add_btn(
-            toast_layout,
-            "[T03] 진행중 중복 거부 토스트 (2초 소멸)",
+            "[T03] 진행중 중복 거부 (⚠️ 경고 아이콘)",
             self._demo_toast_duplicate_rejected,
-            "#dc2626",
+            "#d97706",
         )
         self._add_btn(
             toast_layout,
-            "[T04] 지원하지 않는 URL 실패 토스트",
+            "[T04] 지원하지 않는 URL (Invalid)",
             self._demo_toast_unsupported_url,
             "#dc2626",
         )
         self._add_btn(
             toast_layout,
-            "[T05] VOD 확인 실패 오류 토스트",
+            "[T05] VOD 확인 실패 (Invalid)",
             self._demo_toast_vod_check_failed,
             "#dc2626",
         )
         self._add_btn(
             toast_layout,
-            "[T06] 쿠키 만료 경고 액션 토스트 (버튼 포함)",
+            "[T05] 로그인 필요 실패 (줄바꿈 포맷)",
+            self._demo_toast_login_required,
+            "#dc2626",
+        )
+        self._add_btn(
+            toast_layout,
+            "[T06] 쿠키 만료 경고 (쿠키를 갱신하세요, 🍪/N)",
             self._demo_toast_cookie_expired_action,
             "#d97706",
         )
@@ -193,7 +193,7 @@ class FeedbackShowcaseWindow(QMainWindow):
 
     # --- 토스트 데모 메서드 ---
     def _demo_toast_add_url(self) -> None:
-        self._log("[T01] URL 추가 토스트 호출 (2초 자동 소멸)")
+        self._log("[T01] URL 추가 토스트 호출 (검은 배경, 한 줄 URL)")
         msg = (
             '<span style="color: #3b82f6; font-weight: bold; font-size: 14px;">+</span> '
             '<span style="color: #ffffff;">https://chzzk.naver.com/video/15016450</span>'
@@ -201,49 +201,68 @@ class FeedbackShowcaseWindow(QMainWindow):
         self.toast.show_toast(msg, ToastType.SUCCESS, auto_dismiss_ms=2000)
 
     def _demo_toast_reanalyze_success(self) -> None:
-        self._log("[T02] 쿠키 재분석 안내 토스트 호출 (2초 자동 소멸)")
-        self.toast.show_toast(
-            "쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다.",
-            ToastType.SUCCESS,
-            auto_dismiss_ms=2000,
+        self._log(
+            "[T02] 쿠키 재분석 토스트는 백그라운드 자동 재분석으로 전환되어 침묵 처리됩니다."
         )
 
     def _demo_toast_duplicate_rejected(self) -> None:
-        self._log("[T03] 진행중 중복 거부 토스트 호출 (2초 자동 소멸)")
+        self._log("[T03] 진행중 중복 거부 토스트 호출 (⚠️ 경고 아이콘)")
+        msg = (
+            '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
+            '<span style="color: #ffffff;">이미 추가한 작업입니다.</span>'
+        )
         self.toast.show_toast(
-            "이미 추가한 작업입니다.",
-            ToastType.ERROR,
+            msg,
+            ToastType.WARNING,
             auto_dismiss_ms=2000,
         )
 
     def _demo_toast_unsupported_url(self) -> None:
-        self._log("[T04] 지원하지 않는 URL 실패 토스트 호출 (수동 닫기/새요청 시 소멸)")
+        self._log("[T04] 지원하지 않는 URL 실패 토스트 (Invalid)")
         self.toast.show_toast(
-            "지원하지 않는 URL",
+            "Invalid: https://invalid-url.com/vod/9999",
             ToastType.ERROR,
+            auto_dismiss_ms=2000,
         )
 
     def _demo_toast_vod_check_failed(self) -> None:
-        self._log("[T05] VOD 확인 실패 토스트 호출 (수동 닫기/새요청 시 소멸)")
+        self._log("[T05] VOD 확인 실패 토스트 (Invalid)")
         self.toast.show_toast(
-            "VOD 확인 실패: 비디오를 찾을 수 없거나 비공개 영상입니다.",
+            "Invalid: https://chzzk.naver.com/video/40404040",
             ToastType.ERROR,
+            auto_dismiss_ms=2000,
+        )
+
+    def _demo_toast_login_required(self) -> None:
+        self._log("[T05] 로그인 필요 실패 토스트 (줄바꿈 포맷)")
+        self.toast.show_toast(
+            "Login required; Please login\nhttps://chzzk.naver.com/video/19000000",
+            ToastType.ERROR,
+            auto_dismiss_ms=2000,
         )
 
     def _demo_toast_cookie_expired_action(self) -> None:
-        self._log("[T06] 쿠키 만료 경고 인터랙티브 액션 토스트 호출")
+        self._log(
+            "[T06] 쿠키 만료 경고 액션 토스트 호출 (쿠키를 갱신하세요, 🍪/N 아이콘)"
+        )
+        msg = (
+            '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
+            '<span style="color: #ffffff;">쿠키를 갱신하세요</span>'
+        )
         self.toast.show_action_toast(
-            "저장된 네이버 쿠키가 만료되었습니다.",
+            msg,
             buttons=[
                 (
+                    "🍪",
+                    "#3b82f6",
+                    lambda: self._log("액션 토스트: [🍪 쿠키 설정] 클릭됨"),
                     "쿠키 설정",
-                    "#374151",
-                    lambda: self._log("액션 토스트: [쿠키 설정] 클릭됨"),
                 ),
                 (
-                    "네이버 로그인",
+                    "N",
                     "#03c75a",
-                    lambda: self._log("액션 토스트: [네이버 로그인] 클릭됨"),
+                    lambda: self._log("액션 토스트: [N 네이버 로그인] 클릭됨"),
+                    "네이버 로그인",
                 ),
             ],
         )
@@ -281,11 +300,11 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_modal_file_conflict(self) -> None:
-        self._log("[M04] 파일명 중복 충돌 모달 (3선택 분기) 호출 대기...")
+        self._log("[M04] 파일명 중복 충돌 모달 (간소화 문구) 호출 대기...")
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Chzzk Downloader")
         msg_box.setText(
-            "이미 동일한 이름의 파일이 존재합니다:\n[스트리머A] 2026-09-06 방송.mp4\n\n어떻게 처리하시겠습니까?"
+            "이미 동일한 이름의 파일이 존재합니다:\n[스트리머A] 2026-09-06 방송.mp4"
         )
         overwrite_btn = msg_box.addButton("덮어쓰기", QMessageBox.ButtonRole.AcceptRole)
         rename_btn = msg_box.addButton("이름 변경", QMessageBox.ButtonRole.ActionRole)

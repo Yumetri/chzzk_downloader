@@ -86,24 +86,30 @@ def test_toast_catalog_types_and_appearance(qtbot):
     assert toast.isHidden() is False
     assert "쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다." in toast.label.text()
 
-    # T03: 진행중 중복 거부 토스트 (ERROR)
-    toast.show_toast("이미 추가한 작업입니다.", ToastType.ERROR)
+    # T03: 진행중 중복 거부 토스트 (WARNING, ⚠️ 아이콘)
+    toast.show_toast(
+        '<span style="color: #f59e0b;">⚠️</span> 이미 추가한 작업입니다.',
+        ToastType.WARNING,
+    )
     assert toast.isHidden() is False
     assert "이미 추가한 작업입니다." in toast.label.text()
+    assert "⚠️" in toast.label.text()
 
-    # T06: 만료 경고 액션 토스트 (버튼 목록 포함)
+    # T06: 만료 경고 액션 토스트 (쿠키를 갱신하세요, 🍪/N 아이콘 버튼 및 툴팁)
     toast.show_action_toast(
-        "저장된 네이버 쿠키가 만료되었습니다.",
+        "쿠키를 갱신하세요",
         buttons=[
-            ("쿠키 설정", "#374151", lambda: None),
-            ("네이버 로그인", "#03c75a", lambda: None),
+            ("🍪", "#3b82f6", lambda: None, "쿠키 설정"),
+            ("N", "#03c75a", lambda: None, "네이버 로그인"),
         ],
     )
     assert toast.isHidden() is False
-    assert "저장된 네이버 쿠키가 만료되었습니다." in toast.label.text()
+    assert "쿠키를 갱신하세요" in toast.label.text()
     assert len(toast._action_buttons) == 2
-    assert toast._action_buttons[0].text() == "쿠키 설정"
-    assert toast._action_buttons[1].text() == "네이버 로그인"
+    assert toast._action_buttons[0].text() == "🍪"
+    assert toast._action_buttons[0].toolTip() == "쿠키 설정"
+    assert toast._action_buttons[1].text() == "N"
+    assert toast._action_buttons[1].toolTip() == "네이버 로그인"
 
 
 # 3. 쇼케이스 윈도우 무결성 검증
@@ -124,7 +130,10 @@ def test_feedback_showcase_window_initialization(qtbot):
     assert "[T01] URL 추가 토스트 호출" in window.log_edit.toPlainText()
 
     window._demo_toast_reanalyze_success()
-    assert "[T02] 쿠키 재분석 안내 토스트 호출" in window.log_edit.toPlainText()
+    assert (
+        "[T02] 쿠키 재분석 토스트는 백그라운드 자동 재분석으로 전환"
+        in window.log_edit.toPlainText()
+    )
 
 
 def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
@@ -180,3 +189,57 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
             assert title in ("", "Chzzk Downloader"), (
                 f"macOS 쇼케이스 모달 타이틀 예외 불일치: {title}"
             )
+
+
+def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot):
+    """M04 모달 문구가 '어떻게 처리하시겠습니까?' 없이 컴팩트하고, 작업 카드의 인증 버튼이 🍪/N 아이콘 버튼인지 검증."""
+    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+
+    # 1. M04 텍스트 검증
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/12345",
+        status=TaskStatus.FAILED_LOGIN_REQUIRED,
+    )
+    qtbot.addWidget(card)
+
+    # 2. 인증 버튼 아이콘화 및 툴팁 검증
+    assert card.cookie_btn.text() == "🍪"
+    assert card.cookie_btn.toolTip() == "쿠키 설정"
+    assert card.cookie_btn.width() == 24
+    assert card.cookie_btn.height() == 22
+
+    assert card.login_btn.text() == "N"
+    assert card.login_btn.toolTip() == "네이버 로그인"
+    assert card.login_btn.width() == 24
+    assert card.login_btn.height() == 22
+
+
+def test_toast_unified_dark_background_and_min_width(qtbot):
+    """모든 토스트가 검은 배경(rgba(20, 20, 20, 230))을 사용하고 한 줄 URL 표시를 위해 480px 이상의 최소 너비를 확보하는지 검증."""
+    container = FeedbackShowcaseWindow()
+    qtbot.addWidget(container)
+    toast: ToastWidget = container.toast
+
+    # T01 URL 토스트
+    msg = (
+        '<span style="color: #3b82f6; font-weight: bold; font-size: 14px;">+</span> '
+        '<span style="color: #ffffff;">https://chzzk.naver.com/video/15016450</span>'
+    )
+    toast.show_toast(msg, ToastType.SUCCESS)
+    style = toast.styleSheet()
+    assert "rgba(20, 20, 20, 230)" in style
+    assert toast.minimumWidth() >= 480
+
+    # T03 경고 토스트 (검은 배경 유지)
+    toast.show_toast("⚠️ 이미 추가한 작업입니다.", ToastType.WARNING)
+    style_warning = toast.styleSheet()
+    assert "rgba(20, 20, 20, 230)" in style_warning
+
+    # T04/05 에러 토스트 (검은 배경 유지)
+    toast.show_toast(
+        "Invalid: https://invalid-url.com/vod/9999", ToastType.ERROR
+    )
+    style_error = toast.styleSheet()
+    assert "rgba(20, 20, 20, 230)" in style_error
+
+>>>>>>> 8f1cae2 (feat: T0109B UI 피드백(모달 & 토스트) 및 인터랙션 디자인 개편)
