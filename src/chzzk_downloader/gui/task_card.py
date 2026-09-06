@@ -283,8 +283,8 @@ class TaskCardWidget(QFrame):
         self.cookie_btn.setToolTip("쿠키 설정")
         self.cookie_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cookie_btn.setStyleSheet(
-            "QPushButton { background-color: #3b82f6; color: white; border: none; border-radius: 3px; font-size: 12px; }"
-            "QPushButton:hover { background-color: #2563eb; }"
+            "QPushButton { background-color: transparent; border: none; font-size: 14px; padding: 0; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.15); border-radius: 3px; }"
         )
         self.login_btn = QPushButton("N", self.auth_container)
         self.login_btn.setFixedSize(24, 22)

@@ -64,8 +64,9 @@ class ToastWidget(QFrame):
 
     def _init_ui(self) -> None:
         self.main_layout = QHBoxLayout(self)
-        self.main_layout.setContentsMargins(16, 10, 16, 10)
-        self.main_layout.setSpacing(12)
+        self.main_layout.setContentsMargins(14, 8, 14, 8)
+        self.main_layout.setSpacing(10)
+        self.main_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.label = QLabel(self)
         self.label.setWordWrap(True)
@@ -74,13 +75,15 @@ class ToastWidget(QFrame):
 
         # 액션 버튼들이 배치될 수평 레이아웃
         self.btn_layout = QHBoxLayout()
-        self.btn_layout.setSpacing(8)
+        self.btn_layout.setSpacing(6)
+        self.btn_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.main_layout.addLayout(self.btn_layout)
 
         self.close_btn = ClickableCloseLabel("✕", self, on_click=self.dismiss)
         self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_btn.setStyleSheet(
-            "color: white; font-weight: bold; font-size: 13px; padding: 2px 4px;"
+            "QLabel { color: #9ca3af; font-size: 12px; font-weight: bold; border-radius: 3px; padding: 2px 4px; }"
+            "QLabel:hover { color: #ffffff; background-color: rgba(255, 255, 255, 0.15); }"
         )
         self.main_layout.addWidget(self.close_btn)
 
@@ -97,9 +100,10 @@ class ToastWidget(QFrame):
         toast_type: ToastType = ToastType.SUCCESS,
         auto_dismiss_ms: int = 0,
     ) -> None:
-        """일반 토스트를 표시합니다."""
+        """일반 토스트를 표시합니다 (2초 자동 소멸 시 닫기 버튼 숨김)."""
         self._is_action_mode = False
         self._clear_action_buttons()
+        self.close_btn.hide()
         self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setText(message)
 
@@ -143,6 +147,7 @@ class ToastWidget(QFrame):
         self._is_action_mode = True
         self._timer.stop()  # 사용자가 조작하기 전까지 자동 소멸 안 됨
         self._clear_action_buttons()
+        self.close_btn.show()
 
         self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setText(message)
@@ -165,12 +170,19 @@ class ToastWidget(QFrame):
             if tooltip_text:
                 btn.setToolTip(tooltip_text)
 
-            # 1~2자 아이콘 형태인 경우 컴팩트한 사각 버튼 스타일 적용
-            if len(label_text) <= 2:
-                btn.setFixedSize(26, 24)
+            # 쿠키 아이콘인 경우: 배경 제거하고 투명 아이콘 단독 노출 (호버 시에만 하이라이트)
+            if label_text == "🍪":
+                btn.setFixedSize(24, 22)
+                btn.setStyleSheet(
+                    "QPushButton { background-color: transparent; border: none; font-size: 14px; padding: 0; }"
+                    "QPushButton:hover { background-color: rgba(255, 255, 255, 0.15); border-radius: 3px; }"
+                )
+            elif len(label_text) <= 2:
+                # 네이버 N 등 컴팩트 사각 버튼
+                btn.setFixedSize(24, 22)
                 btn.setStyleSheet(
                     f"QPushButton {{ background-color: {color_code}; color: white; border: none; "
-                    f"border-radius: 4px; font-size: 13px; font-weight: 900; padding: 0; }}"
+                    f"border-radius: 3px; font-size: 12px; font-weight: 900; padding: 0; }}"
                     f"QPushButton:hover {{ opacity: 0.85; }}"
                 )
             else:
@@ -203,14 +215,13 @@ class ToastWidget(QFrame):
         self.raise_()
 
     def reposition(self) -> None:
-        """부모 위젯 기준으로 토스트 위치를 중앙 하단으로 재배치합니다."""
+        """부모 위젯 기준으로 토스트 위치를 중앙 하단으로 재배치합니다 (내용 맞춤형 유동적 너비)."""
         parent_widget = self.parentWidget()
         if parent_widget is None:
             return
 
-        min_w = min(480, int(parent_widget.width() * 0.95))
-        max_w = max(min_w, int(parent_widget.width() * 0.95))
-        self.setMinimumWidth(min_w)
+        max_w = int(parent_widget.width() * 0.92)
+        self.setMinimumWidth(0)
         self.setMaximumWidth(max_w)
         self.adjustSize()
 

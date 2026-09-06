@@ -299,7 +299,10 @@ def test_main_window_valid_url_login_required_flow(main_window, qtbot):
 
         # 2. 토스트 알림 동일 문구 및 2초 자동 소멸 타이머 검증
         assert main_window.toast.isHidden() is False
-        assert f"Login required; Please login\n{test_url}" in main_window.toast.label.text()
+        assert (
+            f"Login required; Please login\n{test_url}"
+            in main_window.toast.label.text()
+        )
         assert main_window.toast._timer.isActive() is True
 
 

@@ -280,7 +280,7 @@ class MainWindow(QMainWindow):
                 '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
                 '<span style="color: #ffffff;">쿠키를 갱신하세요</span>',
                 buttons=[
-                    ("🍪", "#3b82f6", self._on_settings_clicked, "쿠키 설정"),
+                    ("🍪", "transparent", self._on_settings_clicked, "쿠키 설정"),
                     ("N", "#03c75a", self._on_naver_login_clicked, "네이버 로그인"),
                 ],
             )

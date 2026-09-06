@@ -214,32 +214,37 @@ def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot):
     assert card.login_btn.height() == 22
 
 
-def test_toast_unified_dark_background_and_min_width(qtbot):
-    """모든 토스트가 검은 배경(rgba(20, 20, 20, 230))을 사용하고 한 줄 URL 표시를 위해 480px 이상의 최소 너비를 확보하는지 검증."""
+def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot):
+    """모든 토스트가 검은 배경을 사용하고, 고정 최소너비 없이 내용 맞춤형 컴팩트 알약(Dynamic Pill) 크기를 유지하는지 검증."""
     container = FeedbackShowcaseWindow()
     qtbot.addWidget(container)
     toast: ToastWidget = container.toast
 
-    # T01 URL 토스트
+    # T01 URL 토스트 (자동 소멸 시 닫기 버튼 숨김 및 다크 테마 검증)
     msg = (
         '<span style="color: #3b82f6; font-weight: bold; font-size: 14px;">+</span> '
         '<span style="color: #ffffff;">https://chzzk.naver.com/video/15016450</span>'
     )
-    toast.show_toast(msg, ToastType.SUCCESS)
+    toast.show_toast(msg, ToastType.SUCCESS, auto_dismiss_ms=2000)
     style = toast.styleSheet()
     assert "rgba(20, 20, 20, 230)" in style
-    assert toast.minimumWidth() >= 480
+    assert toast.close_btn.isHidden() is True
 
-    # T03 경고 토스트 (검은 배경 유지)
+    # T03 경고 토스트 (짧은 문구는 불필요하게 480px로 늘어나지 않고 컴팩트한 알약 크기 유지)
     toast.show_toast("⚠️ 이미 추가한 작업입니다.", ToastType.WARNING)
     style_warning = toast.styleSheet()
     assert "rgba(20, 20, 20, 230)" in style_warning
+    assert toast.width() < 400  # 휑한 480px 빈 공간 없이 컴팩트함
 
-    # T04/05 에러 토스트 (검은 배경 유지)
-    toast.show_toast(
-        "Invalid: https://invalid-url.com/vod/9999", ToastType.ERROR
+    # T06 액션 토스트 (닫기 버튼 노출 및 쿠키 아이콘 배경 제거 검증)
+    toast.show_action_toast(
+        "쿠키를 갱신하세요",
+        buttons=[
+            ("🍪", "transparent", lambda: None, "쿠키 설정"),
+            ("N", "#03c75a", lambda: None, "네이버 로그인"),
+        ],
     )
-    style_error = toast.styleSheet()
-    assert "rgba(20, 20, 20, 230)" in style_error
-
->>>>>>> 8f1cae2 (feat: T0109B UI 피드백(모달 & 토스트) 및 인터랙션 디자인 개편)
+    assert toast.close_btn.isHidden() is False
+    assert len(toast._action_buttons) == 2
+    cookie_btn = toast._action_buttons[0]
+    assert "background-color: transparent" in cookie_btn.styleSheet()
