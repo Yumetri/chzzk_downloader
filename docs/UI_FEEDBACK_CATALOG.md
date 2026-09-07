@@ -54,7 +54,7 @@
 | **M06** | 쿠키 내보내기 결과 | **Chzzk Downloader** | `쿠키를 성공적으로 내보냈습니다.`<br>`쿠키 내보내기에 실패했습니다: {msg}` | `[확인(기본)]` | Info / Warning | T0106 | `SettingsWindow._on_export_clicked` |
 | **M07** | 폴더 권한 오류 | **Chzzk Downloader** | `선택한 폴더에 쓰기 권한이 없습니다:\n{path}\n\n다른 폴더를 선택해주세요.` | `[확인(기본)]` | Warning | T0108 | `SettingsWindow._on_choose_folder` |
 | **M08** | 네이버 로그인 결과 | **Chzzk Downloader** | `로그인이 확인되어 네이버 쿠키가 저장되었습니다.`<br>`쿠키 저장 중 오류가 발생했습니다: {msg}` | `[확인(기본)]` | Info / Warning | T0106, T0107 | `NaverLoginDialog._on_save_and_close` |
-
+| **M09** | 외부 링크 이동 확인 | **Chzzk Downloader** | `해당 링크로 이동합니다.\n\n이동하시겠습니까?\n{url}` | `[확인(기본)]` / `[취소]` | Primary 파랑 (`#2563eb`) | T0109B | `TaskCardWidget._on_chzzk_badge_clicked` |
 
 ---
 
@@ -71,15 +71,44 @@
 
 ---
 
-## 4. 티켓 구현 시 피드백 업데이트 체크리스트
+## 4. 작업 목록 카드(Task Card) 상태 및 피드백 카탈로그
+
+### 1) 작업 카드 디자인 및 인터랙션 원칙
+* **좌측 세로 바 규칙**:
+  * **치명적 오류/분석 실패 (`FAILED_INVALID`, `FAILED_LOGIN_REQUIRED`)**: 좌측 5px 빨간 바 (`border-left: 5px solid #ef4444; background-color: rgba(239, 68, 68, 0.10);`)를 부여하여 오류 상황을 즉각 인지할 수 있도록 강조합니다.
+  * **다운로드 단계 실패 (`FAILED_DOWNLOAD`)**: API 조회를 성공했으나 네트워크 단절, 프로세스 강제 중단 등으로 실패한 경우 좌측 5px 주황 바 (`border-left: 5px solid #f59e0b; background-color: rgba(245, 158, 11, 0.10);`)를 적용합니다.
+  * **정상 상태 (`ANALYZING`, `READY`, `DOWNLOADING`, `STOPPED`)**: 좌측 바 없이 현행 다크 테마 기본 카드 스타일(`border: 1px solid #333333; background-color: #242424;`)을 유지합니다.
+* **4번 위치(우하단) 인터랙션 아이콘 툴바**:
+  * **치지직 뱃지 (`Z`)**: 24x22px 크기, 치지직 네온 그린 배경(`#00ffa3`)에 검은색 볼드 `Z`, 툴팁 없음. 클릭 시 M09 확인 모달(`해당 링크로 이동합니다.\n\n이동하시겠습니까?\n{url}`) 승인 후 기본 브라우저로 대상 URL을 엽니다.
+  * **말풍선 에러 버튼 (`🗨️!`)**: 24x22px 크기, 툴팁 `"작업 정보"`. 클릭 시 Hitomi/진단 스타일 상세 텍스트(환경, 플랫폼, URL, 메시지, Traceback 등)를 담은 비모달(Modeless) `TaskInfoWindow` 팝업을 표시합니다. (창 최소화/최대화 가능, 메인 창 조작 차단 없음, `[클립보드에 복사]` 버튼 제공)
+  * **쿠키 설정 버튼 (`🍪`)**: 버튼 배경 없이 투명 아이콘, 툴팁 `"쿠키 설정"`. 클릭 시 설정 창의 쿠키 관리 탭으로 이동합니다.
+  * **네이버 로그인 버튼 (`N`)**: 브랜드 아이덴티티 초록 사각(`#03c75a`), 볼드 흰색 `N`, 툴팁 `"네이버 로그인"`. 클릭 시 네이버 웹뷰 로그인 창을 호출합니다.
+
+### 2) 작업 카드 7대 상태 전수 카탈로그 (C01 ~ C07)
+
+| ID | 상태 코드 (`TaskStatus`) | 좌측 세로 바 & 배경 | 1번 위치 문구 (작업명) | 3번 위치 (상태/진행) | 4번 위치 (컨트롤/아이콘) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **C01** | `ANALYZING` | 없음 (기본 테두리) | `읽는 중… {url}` | `분석 중...` | 회전 스피너 |
+| **C02** | `READY` | 없음 (기본 테두리) | `[{스트리머}] {제목}` | `{화질} \| {재생시간}` | 화질 선택 드롭다운, 폴더 선택, `[▶]` 다운로드 시작 버튼 |
+| **C03** | `DOWNLOADING` | 없음 (기본 테두리) | `[{스트리머}] {제목}` | 진행률 바 (`{속도} \| {남은시간} \| {ETA}`) | `[■]` 중지 버튼 |
+| **C04** | `STOPPED` | 없음 (기본 테두리) | `[{스트리머}] {제목}` | `중지됨 ({진행률}%)` | `[▶]` 이어받기 버튼 |
+| **C05** | `FAILED_INVALID` | 5px 빨간 바 (`#ef4444`)<br>레드 틴트 배경 | `Invalid: [chzzk] {url}` | `분석 실패` (오류 메시지) | `[Z]` 치지직 뱃지, `[🗨️!]` 작업 정보 버튼 |
+| **C06** | `FAILED_LOGIN_REQUIRED` | 5px 빨간 바 (`#ef4444`)<br>레드 틴트 배경 | `Login required; Please login\n{url}` (2줄) | `로그인 필요` | `[Z]` 치지직 뱃지, `[🗨️!]` 작업 정보, `[🍪]` 쿠키 설정, `[N]` 네이버 로그인 |
+| **C07** | `FAILED_DOWNLOAD` | 5px 주황 바 (`#f59e0b`)<br>오렌지 틴트 배경 | `[{스트리머}] {제목}` | `다운로드 실패` | `[Z]` 치지직 뱃지, `[🗨️!]` 작업 정보 버튼 |
+
+---
+
+## 5. 티켓 구현 시 피드백 업데이트 체크리스트
 
 1. [ ] **신규 모달 또는 토스트 추가 시**:
    - 본 문서(`docs/UI_FEEDBACK_CATALOG.md`)의 카탈로그 표에 항목 추가 (ID, 제목, 문구, 버튼, 소멸 규칙).
    - 확인 질문형 모달인 경우 `chzzk_downloader.gui.dialogs.ask_confirm_dialog`를 사용하여 "확인/취소" 및 "확인 하이라이트" 원칙 준수.
-2. [ ] **쇼케이스 도구 등록**:
-   - `src/chzzk_downloader/gui/feedback_showcase.py`에 해당 항목을 테스트할 수 있는 버튼 추가.
-3. [ ] **자동 검증 테스트 확인**:
-   - `uv run pytest tests/test_ui_feedback_catalog.py`를 실행하여 문체 및 버튼 규격 검증 통과 확인.
-4. [ ] **실행 확인**:
-   - `uv run python -m chzzk_downloader.gui.feedback_showcase` 실행 후 눈으로 실제 렌더링 결과 확인.
+2. [ ] **작업 목록 카드 디자인/인터랙션 변경 시**:
+   - C01~C07 상태 규칙 준수 (빨간색/주황색 좌측 바, 치지직 뱃지 링크 모달, 말풍선 에러 비모달 진단창 연동).
+3. [ ] **쇼케이스 도구 등록**:
+   - `src/chzzk_downloader/gui/feedback_showcase.py`에 해당 항목을 테스트할 수 있는 버튼 또는 작업 카드 상태 추가.
+4. [ ] **자동 검증 테스트 확인**:
+   - `uv run pytest tests/test_ui_feedback_catalog.py`를 실행하여 문체, 버튼 및 카드 규격 검증 통과 확인.
+5. [ ] **실행 확인**:
+   - `uv run python tools/preview_ui_feedbacks.py` 실행 후 탭 1(모달/토스트) 및 탭 2(작업목록 카드)에서 눈으로 실제 렌더링 결과 확인.
 

@@ -192,17 +192,32 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
 
 
 def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot):
-    """M04 모달 문구가 '어떻게 처리하시겠습니까?' 없이 컴팩트하고, 작업 카드의 인증 버튼이 🍪/N 아이콘 버튼인지 검증."""
+    """M04 모달 문구 및 작업 카드의 뱃지/에러툴팁/인증버튼/좌측컬러바 검증."""
     from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
 
-    # 1. M04 텍스트 검증
     card = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/12345",
         status=TaskStatus.FAILED_LOGIN_REQUIRED,
     )
     qtbot.addWidget(card)
 
-    # 2. 인증 버튼 아이콘화 및 툴팁 검증
+    # 1. 2줄 텍스트 및 빨간색 좌측 5px 바 검증
+    assert "Login required; Please login\n" in card.title_label.text()
+    assert "border-left: 5px solid #ef4444" in card.styleSheet()
+
+    # 2. 치지직 뱃지 (툴팁 없음, 클릭 가능)
+    assert card.chzzk_badge.text() == "Z"
+    assert card.chzzk_badge.toolTip() == ""
+    assert card.chzzk_badge.width() == 24
+    assert card.chzzk_badge.height() == 22
+
+    # 3. 말풍선 에러 버튼 (툴팁 "작업 정보")
+    assert card.error_info_btn.text() == "🗨️!"
+    assert card.error_info_btn.toolTip() == "작업 정보"
+    assert card.error_info_btn.width() == 24
+    assert card.error_info_btn.height() == 22
+
+    # 4. 인증 버튼 아이콘화 및 툴팁 검증
     assert card.cookie_btn.text() == "🍪"
     assert card.cookie_btn.toolTip() == "쿠키 설정"
     assert card.cookie_btn.width() == 24
@@ -248,3 +263,86 @@ def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot):
     assert len(toast._action_buttons) == 2
     cookie_btn = toast._action_buttons[0]
     assert "background-color: transparent" in cookie_btn.styleSheet()
+
+
+def test_feedback_showcase_task_card_gallery_tab(qtbot):
+    """피드백 쇼케이스 창에 작업 카드 갤러리 탭이 구성되어 있고 7대 카드가 렌더링되는지 검증."""
+    window = FeedbackShowcaseWindow()
+    qtbot.addWidget(window)
+
+    assert window.tabs.count() == 2
+    assert "토스트" in window.tabs.tabText(0)
+    assert "작업 목록 카드" in window.tabs.tabText(1)
+
+
+def test_task_info_window_modeless_and_diagnostic_format(qtbot):
+    """말풍선 에러 버튼 클릭 시 비모달 진단 팝업 창이 뜨고 사용자 요청 포맷대로 텍스트가 채워지는지 검증."""
+    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15070093",
+        status=TaskStatus.FAILED_LOGIN_REQUIRED,
+    )
+    qtbot.addWidget(card)
+    card.set_failed(
+        TaskStatus.FAILED_LOGIN_REQUIRED, "Login required to access this 19+ video"
+    )
+
+    # 팝업 열기
+    card.open_task_info_window()
+    assert hasattr(card, "_info_win")
+    assert card._info_win is not None
+    info_win = card._info_win
+    qtbot.addWidget(info_win)
+
+    # 1. 비모달 및 가시성 검증
+    assert info_win.isVisible() is True
+    assert info_win.isModal() is False
+
+    # 2. 내용 포맷 검증
+    content = info_win.text_edit.toPlainText()
+    assert "Login required; Please login" in content
+    assert "https://chzzk.naver.com/video/15070093" in content
+    assert "platform / locale:" in content
+    assert "order / group / uid:" in content
+    assert "[Messages]" in content
+    assert "LoginRequired_chzzk" in content
+
+    # 3. 클립보드 복사 버튼 검증
+    info_win._copy_to_clipboard()
+    assert "복사됨" in info_win.copy_btn.text()
+    info_win.close()
+
+
+def test_task_card_chzzk_badge_confirm_modal_and_browser(qtbot, monkeypatch):
+    """치지직 뱃지 클릭 시 확인/취소 모달 승인 후 브라우저 URL 오픈 검증."""
+    from PyQt6.QtGui import QDesktopServices
+
+    import chzzk_downloader.gui.task_card
+    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15070093",
+        status=TaskStatus.FAILED_INVALID,
+    )
+    qtbot.addWidget(card)
+
+    opened_urls: list[str] = []
+
+    # 1) 확인 모달 승인 모킹
+    def mock_ask(*args, **kwargs):
+        return True
+
+    # 2) QDesktopServices.openUrl 모킹
+    def mock_open_url(url):
+        opened_urls.append(url.toString())
+        return True
+
+    monkeypatch.setattr(chzzk_downloader.gui.task_card, "ask_confirm_dialog", mock_ask)
+    monkeypatch.setattr(QDesktopServices, "openUrl", mock_open_url)
+
+    # 뱃지 클릭
+    card.chzzk_badge.click()
+
+    assert len(opened_urls) == 1
+    assert opened_urls[0] == "https://chzzk.naver.com/video/15070093"
