@@ -657,6 +657,7 @@ class TaskCardWidget(QFrame):
         if self.status == TaskStatus.ANALYZING:
             # 유저 요구사항: 읽는 중… URL
             self.title_label.setText(f"읽는 중… {self.raw_url}")
+            self.status_label.show()
             self.status_label.setText("분석 중...")
             self.auth_container.hide()
             self.ready_container.hide()
@@ -665,6 +666,7 @@ class TaskCardWidget(QFrame):
             self.thumb_label.setText("분석 중")
 
         elif self.status == TaskStatus.READY:
+            self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
                 dur_str = format_duration(self.vod_info.duration)
@@ -680,6 +682,7 @@ class TaskCardWidget(QFrame):
                 self.thumb_label.setText("VOD")
 
         elif self.status == TaskStatus.DOWNLOADING:
+            self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
                 dur_str = format_duration(self.vod_info.duration)
@@ -693,6 +696,7 @@ class TaskCardWidget(QFrame):
             self.spinner.start()
 
         elif self.status == TaskStatus.STOPPED:
+            self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
                 dur_str = format_duration(self.vod_info.duration)
@@ -712,7 +716,9 @@ class TaskCardWidget(QFrame):
 
         elif self.status == TaskStatus.FAILED_LOGIN_REQUIRED:
             self.title_label.setText(f"Login required; Please login\n{self.raw_url}")
-            self.status_label.setText("로그인 필요")
+            # C06: 3번 위치 상태 표시는 불필요하므로 숨김
+            self.status_label.setText("")
+            self.status_label.hide()
             self.auth_container.show()
             self.chzzk_badge.show()
             self.error_info_btn.show()
@@ -726,7 +732,9 @@ class TaskCardWidget(QFrame):
 
         elif self.status == TaskStatus.FAILED_INVALID:
             self.title_label.setText(f"Invalid: [chzzk] {self.raw_url}")
-            self.status_label.setText(self.error_message or "분석 실패")
+            # C05: 3번 위치 상태 표시는 불필요하므로 숨김
+            self.status_label.setText("")
+            self.status_label.hide()
             self.auth_container.show()
             self.chzzk_badge.show()
             self.error_info_btn.show()
@@ -743,7 +751,9 @@ class TaskCardWidget(QFrame):
                 self.title_label.setText(self.vod_info.display_name)
             else:
                 self.title_label.setText(f"Download failed: {self.raw_url}")
-            self.status_label.setText("다운로드 실패")
+            # C07: 3번 위치 상태 표시는 불필요하므로 숨김
+            self.status_label.setText("")
+            self.status_label.hide()
             self.auth_container.show()
             self.chzzk_badge.show()
             self.error_info_btn.show()

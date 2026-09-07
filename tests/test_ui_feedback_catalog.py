@@ -201,9 +201,11 @@ def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot):
     )
     qtbot.addWidget(card)
 
-    # 1. 2줄 텍스트 및 빨간색 좌측 5px 바 검증
+    # 1. 2줄 텍스트 및 빨간색 좌측 5px 바 검증 (3번 위치 상태 라벨 숨김 검증)
     assert "Login required; Please login\n" in card.title_label.text()
     assert "border-left: 5px solid #ef4444" in card.styleSheet()
+    assert card.status_label.isHidden() is True
+    assert card.status_label.text() == ""
 
     # 2. 치지직 뱃지 (툴팁 없음, 클릭 가능)
     assert card.chzzk_badge.text() == "Z"

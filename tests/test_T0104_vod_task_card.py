@@ -148,6 +148,8 @@ def test_task_card_failed_invalid_styling(qtbot):
 
     assert card.status == TaskStatus.FAILED_INVALID
     assert card.title_label.text() == f"Invalid: [chzzk] {url}"
+    assert card.status_label.isHidden() is True
+    assert card.status_label.text() == ""
     assert card.thumb_label.text() == "✕"
     assert card.auth_container.isHidden() is False
     assert card.cookie_btn.isHidden() is True
@@ -168,7 +170,8 @@ def test_task_card_failed_login_required_styling(qtbot):
 
     assert card.status == TaskStatus.FAILED_LOGIN_REQUIRED
     assert card.title_label.text() == f"Login required; Please login\n{url}"
-    assert card.status_label.text() == "로그인 필요"
+    assert card.status_label.isHidden() is True
+    assert card.status_label.text() == ""
     assert card.thumb_label.text() == "인증 필요"
     assert card.auth_container.isHidden() is False
 
