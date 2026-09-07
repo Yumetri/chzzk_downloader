@@ -158,6 +158,15 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
         "no_warnings": True,
         "extract_flat": False,
     }
+
+    from chzzk_downloader.core.cookie_manager import (
+        get_cookie_file_path,
+        has_valid_cookies,
+    )
+
+    if has_valid_cookies():
+        opts["cookiefile"] = str(get_cookie_file_path())
+
     if ydl_opts:
         opts.update(ydl_opts)
 

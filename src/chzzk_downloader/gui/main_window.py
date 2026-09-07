@@ -1,7 +1,9 @@
 """메인 윈도우 모듈."""
 
+from typing import Any
+
 from PyQt6 import sip
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QCloseEvent, QResizeEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -21,13 +23,19 @@ from PyQt6.QtWidgets import (
 from chzzk_downloader.config import SUCCESS_TOAST_DURATION_MS
 from chzzk_downloader.core.url_parser import parse_chzzk_vod_url
 from chzzk_downloader.core.ytdlp import VodInfo
+from chzzk_downloader.gui.dialogs import ask_confirm_dialog
 from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
 from chzzk_downloader.gui.toast import ToastType, ToastWidget
 from chzzk_downloader.gui.workers import VodCheckWorker
 
+_DETACHED_WORKERS: set[QThread] = set()
+
 
 class TaskListWidget(QWidget):
     """작업 목록 및 빈 상태 안내를 관리하는 위젯."""
+
+    request_open_settings = pyqtSignal()
+    request_naver_login = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -69,17 +77,23 @@ class TaskListWidget(QWidget):
                     cards.append(widget)
         return cards
 
-    def has_task(self, video_no: str | None, raw_url: str) -> bool:
-        """주어진 video_no 또는 raw_url을 가진 작업 카드가 이미 존재하는지 확인합니다."""
+    def find_task_card(
+        self, video_no: str | None, raw_url: str
+    ) -> TaskCardWidget | None:
+        """주어진 video_no 또는 raw_url을 가진 작업 카드를 찾아 반환합니다."""
         clean_raw = raw_url.strip()
         for card in self.get_all_cards():
             if card.is_deleted or sip.isdeleted(card):
                 continue
             if video_no and card.video_no and card.video_no == video_no:
-                return True
+                return card
             if card.raw_url.strip() == clean_raw:
-                return True
-        return False
+                return card
+        return None
+
+    def has_task(self, video_no: str | None, raw_url: str) -> bool:
+        """주어진 video_no 또는 raw_url을 가진 작업 카드가 이미 존재하는지 확인합니다."""
+        return self.find_task_card(video_no, raw_url) is not None
 
     def add_task_card(self, card: TaskCardWidget) -> QListWidgetItem:
         """작업 카드를 목록 최상단에 추가하고 표시 상태를 갱신합니다."""
@@ -96,6 +110,8 @@ class TaskListWidget(QWidget):
                 self.refresh_state()
 
         card.delete_requested.connect(_on_delete)
+        card.request_open_cookies.connect(self.request_open_settings.emit)
+        card.request_naver_login.connect(self.request_naver_login.emit)
         self.refresh_state()
         return item
 
@@ -109,6 +125,7 @@ class MainWindow(QMainWindow):
         self.resize(640, 480)
 
         self._worker: VodCheckWorker | None = None
+        self._recheck_workers: list[VodCheckWorker] = []
         self._url_context_menu: QMenu | None = None
         self.current_vod_info: VodInfo | None = None
         self._init_ui()
@@ -153,12 +170,18 @@ class MainWindow(QMainWindow):
 
         # 3. 작업 목록 영역 (URL 입력칸 하단)
         self.task_list_widget = TaskListWidget(self)
+        self.task_list_widget.request_open_settings.connect(self._on_settings_clicked)
+        self.task_list_widget.request_naver_login.connect(self._on_naver_login_clicked)
         self.task_list = self.task_list_widget.list_widget
         self.empty_label = self.task_list_widget.empty_label
         main_layout.addWidget(self.task_list_widget)
 
         # 4. 오버레이 토스트 위젯
         self.toast = ToastWidget(self)
+
+        # 5. 세션 검증 비동기 작업자 및 앱 시작 시 검증 트리거 (T0107)
+        self._cookie_verify_worker: Any = None
+        self._check_cookie_session_on_startup()
 
     def resizeEvent(self, event: QResizeEvent | None) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -167,13 +190,181 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent | None) -> None:  # noqa: N802
         if self._worker is not None and self._worker.isRunning():
+            try:
+                self._worker.finished_success.disconnect()
+            except Exception:
+                pass
+            try:
+                self._worker.finished_failed.disconnect()
+            except Exception:
+                pass
+            self._worker.setParent(None)
             self._worker.quit()
-            self._worker.wait()
+            self._worker.wait(100)
+            if self._worker.isRunning():
+                w_ref = self._worker
+                w_ref.finished.connect(lambda ref=w_ref: _DETACHED_WORKERS.discard(ref))
+                _DETACHED_WORKERS.add(w_ref)
+            self._worker = None
+
+        for w in list(self._recheck_workers):
+            if w.isRunning():
+                try:
+                    w.finished_success.disconnect()
+                except Exception:
+                    pass
+                try:
+                    w.finished_failed.disconnect()
+                except Exception:
+                    pass
+                w.setParent(None)
+                w.quit()
+                w.wait(100)
+                if w.isRunning():
+                    rw_ref = w
+                    rw_ref.finished.connect(
+                        lambda ref=rw_ref: _DETACHED_WORKERS.discard(ref)
+                    )
+                    _DETACHED_WORKERS.add(rw_ref)
+        self._recheck_workers.clear()
+
+        if (
+            hasattr(self, "_cookie_verify_worker")
+            and self._cookie_verify_worker is not None
+            and self._cookie_verify_worker.isRunning()
+        ):
+            try:
+                self._cookie_verify_worker.finished_verification.disconnect()
+            except Exception:
+                pass
+            self._cookie_verify_worker.setParent(None)
+            self._cookie_verify_worker.quit()
+            self._cookie_verify_worker.wait(100)
+            if self._cookie_verify_worker.isRunning():
+                vw_ref = self._cookie_verify_worker
+                vw_ref.finished.connect(
+                    lambda ref=vw_ref: _DETACHED_WORKERS.discard(ref)
+                )
+                _DETACHED_WORKERS.add(vw_ref)
+            self._cookie_verify_worker = None
+
+        if hasattr(self, "_settings_window") and self._settings_window is not None:
+            self._settings_window.close()
         super().closeEvent(event)
 
+    def _check_cookie_session_on_startup(self) -> None:
+        """앱 시작 시 저장된 쿠키가 존재하면 백그라운드 1회 세션 검증을 수행합니다 (T0107)."""
+        from chzzk_downloader.core.cookie_manager import has_valid_cookies
+
+        if not has_valid_cookies():
+            return
+
+        from chzzk_downloader.gui.workers import CookieVerifyWorker
+
+        self._cookie_verify_worker = CookieVerifyWorker(timeout=3.0, parent=None)
+        self._cookie_verify_worker.finished_verification.connect(
+            self._on_cookie_session_verified
+        )
+        self._cookie_verify_worker.start()
+
+    def _on_cookie_session_verified(self, status: Any, msg: str) -> None:
+        """세션 검증 완료 핸들러 (정상 시 침묵, 만료 시 액션 토스트 노출)."""
+        from chzzk_downloader.core.cookie_manager import SessionStatus
+
+        if hasattr(self, "_settings_window") and self._settings_window is not None:
+            self._settings_window.refresh_status()
+
+        if status == SessionStatus.EXPIRED:
+            # 사용자 지정 순서: [쿠키 설정] -> [네이버 로그인]
+            self.toast.show_action_toast(
+                "저장된 네이버 로그인 쿠키가 만료되었습니다.",
+                buttons=[
+                    ("쿠키 설정", "#3b82f6", self._on_settings_clicked),
+                    ("네이버 로그인", "#03c75a", self._on_naver_login_clicked),
+                ],
+            )
+
+    def _on_naver_login_clicked(self) -> None:
+        """네이버 로그인 버튼 클릭 시 내장 브라우저 로그인 창을 엽니다."""
+        from chzzk_downloader.gui.naver_login_dialog import NaverLoginDialog
+
+        self._login_dialog = NaverLoginDialog(self)
+        self._login_dialog.login_success.connect(self._on_naver_login_success)
+        self._login_dialog.exec()
+        self._login_dialog.deleteLater()
+        self._login_dialog = None
+
+    def _on_naver_login_success(self, msg: str) -> None:
+        """네이버 로그인 완료 시 토스트 안내, 설정창 갱신 및 실패 카드 자동 재분석."""
+        self.toast.show_toast(
+            "네이버 로그인이 완료되었습니다.",
+            ToastType.SUCCESS,
+            auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+        )
+        if hasattr(self, "_settings_window") and self._settings_window is not None:
+            self._settings_window.refresh_status()
+        self._on_cookies_updated()
+
     def _on_settings_clicked(self) -> None:
-        """설정 버튼 클릭 핸들러 (향후 티켓에서 세부 구현)."""
-        pass
+        """설정 버튼 또는 카드 내 쿠키 설정 클릭 핸들러 (Modeless 설정 창 오픈)."""
+        from chzzk_downloader.gui.settings_window import SettingsWindow
+
+        if not hasattr(self, "_settings_window") or self._settings_window is None:
+            self._settings_window = SettingsWindow(self)
+            self._settings_window.cookies_updated.connect(self._on_cookies_updated)
+        self._settings_window.refresh_status()
+        self._settings_window.show()
+        self._settings_window.raise_()
+        self._settings_window.activateWindow()
+
+    def _on_cookies_updated(self) -> None:
+        """쿠키 저장/불러오기 시 로그인 필요 실패 카드 자동 재분석 (T0106 옵션 A)."""
+        from chzzk_downloader.core.cookie_manager import has_valid_cookies
+
+        if not has_valid_cookies():
+            return
+
+        failed_cards = [
+            c
+            for c in self.task_list_widget.get_all_cards()
+            if c.status == TaskStatus.FAILED_LOGIN_REQUIRED and not c.is_deleted
+        ]
+        if not failed_cards:
+            return
+
+        self.toast.show_toast(
+            "쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다.",
+            ToastType.SUCCESS,
+            auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+        )
+
+        for card in failed_cards:
+            card.status = TaskStatus.ANALYZING
+            card._update_display()
+            card._apply_style()
+            worker = VodCheckWorker(card.video_no or card.raw_url, parent=None)
+            self._recheck_workers.append(worker)
+
+            def _on_success(
+                info: Any, c: TaskCardWidget = card, w: VodCheckWorker = worker
+            ) -> None:
+                if w in self._recheck_workers:
+                    self._recheck_workers.remove(w)
+                self._on_vod_check_success(info, c)
+
+            def _on_failed(
+                err: str,
+                c: TaskCardWidget = card,
+                u: str = card.raw_url,
+                w: VodCheckWorker = worker,
+            ) -> None:
+                if w in self._recheck_workers:
+                    self._recheck_workers.remove(w)
+                self._on_vod_check_failed(err, c, u)
+
+            worker.finished_success.connect(_on_success)
+            worker.finished_failed.connect(_on_failed)
+            worker.start()
 
     def _on_paste_clicked(self) -> None:
         """붙여넣기 버튼 클릭 핸들러: 클립보드 텍스트를 URL 입력칸에 설정."""
@@ -251,8 +442,29 @@ class MainWindow(QMainWindow):
                 self.url_input.setText(text)
                 self.download_btn.click()
 
+    def _start_vod_check(self, card: TaskCardWidget, video_no: str) -> None:
+        """지정된 카드에 대해 VOD 메타데이터 비동기 조회를 시작합니다."""
+        self.download_btn.setEnabled(False)
+        worker = VodCheckWorker(video_no, parent=None)
+        worker.finished_success.connect(
+            lambda info, c=card: self._on_vod_check_success(info, c)
+        )
+        worker.finished_failed.connect(
+            lambda err, c=card, u=card.raw_url: self._on_vod_check_failed(err, c, u)
+        )
+        worker.finished.connect(lambda: self.download_btn.setEnabled(True))
+        self._worker = worker
+        worker.start()
+
+    def _confirm_redownload_dialog(self) -> bool:
+        """동일 VOD 재다운로드 확인 모달을 띄우고 승인 여부를 반환합니다 (확인/취소, 확인 하이라이트)."""
+        return ask_confirm_dialog(
+            parent=self,
+            text="이미 추가한 작업입니다. 다시 다운로드하시겠습니까?",
+        )
+
     def _on_download_clicked(self) -> None:
-        """다운로드 버튼 클릭 핸들러 (T0104: 작업 카드 즉시 추가, VOD 판별 및 비동기 정보 조회)."""
+        """다운로드 버튼 클릭 핸들러 (T0104, T0109)."""
         # 새로운 요청 시작 시 기존 토스트 즉시 닫기
         self.toast.dismiss()
 
@@ -266,13 +478,30 @@ class MainWindow(QMainWindow):
 
         video_no = parse_chzzk_vod_url(raw_url)
 
-        # 동일 영상 중복 방지 (T0105 옵션 A)
-        if self.task_list_widget.has_task(video_no, raw_url):
-            self.toast.show_toast(
-                "이미 추가한 작업입니다.",
-                ToastType.ERROR,
-                auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
-            )
+        # 동일 작업 재다운로드 확인 및 충돌 방어 (T0109)
+        existing_card = self.task_list_widget.find_task_card(video_no, raw_url)
+        if existing_card is not None:
+            # 읽는 중(ANALYZING), 녹화 중(DOWNLOADING), 대기 중(READY) 상태인 경우 즉시 거부 토스트 출력
+            if existing_card.status in (
+                TaskStatus.ANALYZING,
+                TaskStatus.DOWNLOADING,
+                TaskStatus.READY,
+            ):
+                self.toast.show_toast(
+                    "이미 추가한 작업입니다.",
+                    ToastType.ERROR,
+                    auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+                )
+                return
+
+            # 중지(STOPPED) 또는 실패 등 완결 상태인 경우 재다운로드 확인 모달
+            if self._confirm_redownload_dialog():
+                # 이전 세션 워커/스레드 및 파일 핸들 정리, 클린 리셋
+                existing_card.reset_for_redownload()
+                if video_no:
+                    self._start_vod_check(existing_card, video_no)
+                else:
+                    existing_card.set_failed(TaskStatus.FAILED_INVALID, "Invalid URL")
             return
 
         if not video_no:
@@ -311,22 +540,12 @@ class MainWindow(QMainWindow):
             auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
         )
 
-        self.download_btn.setEnabled(False)
-        worker = VodCheckWorker(video_no, parent=self)
-        worker.finished_success.connect(
-            lambda info, c=card: self._on_vod_check_success(info, c)
-        )
-        worker.finished_failed.connect(
-            lambda err, c=card, u=raw_url: self._on_vod_check_failed(err, c, u)
-        )
-        worker.finished.connect(lambda: self.download_btn.setEnabled(True))
-        self._worker = worker
-        worker.start()
+        self._start_vod_check(card, video_no)
 
     def _on_vod_check_success(
         self, info: VodInfo, card: TaskCardWidget | None = None
     ) -> None:
-        """VOD 정보 조회 성공 처리: 해당 카드에 메타데이터 반영."""
+        """VOD 정보 조회 성공 처리: 해당 카드에 메타데이터 반영 및 자동 다운로드 분기."""
         self.current_vod_info = info
         if (
             card is None
@@ -336,6 +555,13 @@ class MainWindow(QMainWindow):
         ):
             return
         card.update_with_vod_info(info)
+
+        # VOD 자동 다운로드 분기 (T0109)
+        from chzzk_downloader.core.settings_manager import get_current_settings
+
+        settings = get_current_settings()
+        if settings.vod_auto_download:
+            card.trigger_start_download()
 
     def _on_vod_check_failed(
         self,

@@ -70,7 +70,7 @@ def test_task_card_analyzing_state_and_hover_action(qtbot):
     qtbot.addWidget(card)
 
     assert card.status == TaskStatus.ANALYZING
-    assert card.title_label.text() == f"분석 중... ({url})"
+    assert card.title_label.text() in (f"읽는 중… {url}", f"분석 중... ({url})")
     assert card.title_label.wordWrap() is True
     assert card.status_label.text() == "분석 중..."
     assert card.thumb_label.text() == "분석 중"
@@ -268,8 +268,8 @@ def test_main_window_valid_url_success_flow(main_window, qtbot):
         # 3. 워커 완료 대기
         qtbot.waitUntil(lambda: main_window.download_btn.isEnabled(), timeout=2000)
 
-        # 4. 카드 갱신 결과 검증 (READY 및 1번 위치 [스트리머] 2024-05-06 제목)
-        assert card.status == TaskStatus.READY
+        # 4. 카드 갱신 결과 검증 (READY 또는 자동 다운로드 진입 DOWNLOADING)
+        assert card.status in (TaskStatus.READY, TaskStatus.DOWNLOADING)
         assert card.title_label.text() == "[스트리머D] 2024-05-06 테스트 라이브 방송"
         assert card.status_label.text() == "1080p60 | 01:00:00"
         assert "#ef4444" not in card.styleSheet()

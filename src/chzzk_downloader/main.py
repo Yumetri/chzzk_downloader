@@ -2,6 +2,7 @@
 
 import sys
 
+import PyQt6.QtWebEngineWidgets  # noqa: F401 - QtWebEngine must be imported before QApplication
 from PyQt6.QtWidgets import QApplication
 
 from chzzk_downloader.gui.main_window import MainWindow

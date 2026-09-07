@@ -36,3 +36,19 @@ class VodCheckWorker(QThread):
             self.finished_failed.emit(str(e))
         except Exception as e:
             self.finished_failed.emit(f"예기치 못한 오류: {e}")
+
+
+class CookieVerifyWorker(QThread):
+    """치지직 세션 유효성을 비동기로 검증하는 작업자."""
+
+    finished_verification = pyqtSignal(object, str)
+
+    def __init__(self, timeout: float = 3.0, parent=None) -> None:
+        super().__init__(parent)
+        self.timeout = timeout
+
+    def run(self) -> None:
+        from chzzk_downloader.core.cookie_manager import verify_cookie_session
+
+        status, msg = verify_cookie_session(timeout=self.timeout)
+        self.finished_verification.emit(status, msg)

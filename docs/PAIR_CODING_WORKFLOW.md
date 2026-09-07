@@ -51,3 +51,19 @@
 리뷰가 필요하면 완료 여부와 관계없이 PR을 보낼 수 있습니다. 다음 수업에서는 해당 PR에 대한 피드백부터 다시 시작합니다.
 
 > 지난 PR 피드백 → 티켓 합의 → 30분 페어코딩 → 10분 피드백 → 역할 교대 → 남은 작업 진행과 PR
+
+---
+
+## 4. UI 피드백(모달 & 토스트) 동기화 규칙
+
+새로운 티켓을 구현하거나 수정하는 과정에서 **모달 대화상자**나 **토스트 알림**이 추가·변경되는 경우, 다음 규칙을 준수합니다:
+
+1. **디자인 및 문체 규격 준수**:
+   - 확인 질문형 모달은 Yes/No를 금지하고 `chzzk_downloader.gui.dialogs.ask_confirm_dialog`를 사용하여 **[확인] / [취소]** 명시 및 **'확인' 버튼 기본 하이라이트**를 적용합니다.
+   - 문체는 질문형 `~하시겠습니까?`, 안내형 `~합니다.` / `~되었습니다.`를 준수합니다.
+2. **문서 및 쇼케이스 주기적 갱신**:
+   - [`docs/UI_FEEDBACK_CATALOG.md`](file:///c:/Users/이홍원/Desktop/code_training/chzzk_downloader/docs/UI_FEEDBACK_CATALOG.md)의 카탈로그 표에 신규/수정 항목을 즉시 등록합니다.
+   - [`src/chzzk_downloader/gui/feedback_showcase.py`](file:///c:/Users/이홍원/Desktop/code_training/chzzk_downloader/src/chzzk_downloader/gui/feedback_showcase.py)에 데모 버튼을 추가하여 개발자가 눈으로 직접 확인할 수 있도록 합니다.
+3. **자동화 테스트 검증**:
+   - `uv run pytest tests/test_ui_feedback_catalog.py`를 실행하여 문체와 버튼 하이라이트 규격이 통과하는지 검증합니다.
+
