@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import chzzk_downloader.gui.feedback_showcase
 from chzzk_downloader.gui.dialogs import create_confirm_box
 from chzzk_downloader.gui.feedback_showcase import FeedbackShowcaseWindow
@@ -24,9 +26,15 @@ def test_confirm_modals_use_korean_confirm_cancel_and_default_highlight(qtbot):
         qtbot.addWidget(msg_box)
 
         # 0. 윈도우 아웃 프레임(타이틀) Chzzk Downloader 통일 검증
-        assert msg_box.windowTitle() == "Chzzk Downloader", (
-            f"[{modal_id}] 창 타이틀 불일치"
-        )
+        # (macOS HIG 규격상 NSAlert는 상단 타이틀바가 없어 Qt가 windowTitle()을 빈 문자열로 반환)
+        if sys.platform != "darwin":
+            assert msg_box.windowTitle() == "Chzzk Downloader", (
+                f"[{modal_id}] 창 타이틀 불일치"
+            )
+        else:
+            assert msg_box.windowTitle() in ("", "Chzzk Downloader"), (
+                f"[{modal_id}] macOS 창 타이틀 예외 불일치"
+            )
 
         # 1. 한글 확인/취소 검증
         assert confirm_btn.text() == "확인", f"[{modal_id}] 확인 버튼 텍스트 불일치"
@@ -163,6 +171,12 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
     window._demo_modal_file_conflict()
 
     # 모든 모달의 창 제목이 "Chzzk Downloader"인지 검증
+    # (macOS HIG 규격상 NSAlert는 상단 타이틀바가 없어 Qt가 windowTitle()을 빈 문자열로 반환)
     assert len(captured_titles) == 6
     for title in captured_titles:
-        assert title == "Chzzk Downloader", f"쇼케이스 모달 타이틀 불일치: {title}"
+        if sys.platform != "darwin":
+            assert title == "Chzzk Downloader", f"쇼케이스 모달 타이틀 불일치: {title}"
+        else:
+            assert title in ("", "Chzzk Downloader"), (
+                f"macOS 쇼케이스 모달 타이틀 예외 불일치: {title}"
+            )
