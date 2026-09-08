@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from chzzk_downloader.config import DEFAULT_FFMPEG_BINARY_NAME
 from chzzk_downloader.core.ffmpeg_manager import (
     FFmpegProbeResult,
     FFmpegStatus,
@@ -207,7 +208,7 @@ def test_candidate_paths_fallback_hierarchy(tmp_path, monkeypatch):
     # 1. 윈도우 %TEMP% 경로 후보 포함 확인
     monkeypatch.setenv("TEMP", str(tmp_path))
     candidates = get_candidate_ffmpeg_paths()
-    expected_temp_ffmpeg = tmp_path / "ffmpeg.exe"
+    expected_temp_ffmpeg = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
     assert any(c.resolve() == expected_temp_ffmpeg.resolve() for c in candidates)
 
     # 2. %TEMP%\ffmpeg.exe가 실제로 존재할 때 resolve_ffmpeg_path가 찾아내는지 확인
