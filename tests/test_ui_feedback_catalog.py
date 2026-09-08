@@ -86,24 +86,30 @@ def test_toast_catalog_types_and_appearance(qtbot):
     assert toast.isHidden() is False
     assert "쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다." in toast.label.text()
 
-    # T03: 진행중 중복 거부 토스트 (ERROR)
-    toast.show_toast("이미 추가한 작업입니다.", ToastType.ERROR)
+    # T03: 진행중 중복 거부 토스트 (WARNING, ⚠️ 아이콘)
+    toast.show_toast(
+        '<span style="color: #f59e0b;">⚠️</span> 이미 추가한 작업입니다.',
+        ToastType.WARNING,
+    )
     assert toast.isHidden() is False
     assert "이미 추가한 작업입니다." in toast.label.text()
+    assert "⚠️" in toast.label.text()
 
-    # T06: 만료 경고 액션 토스트 (버튼 목록 포함)
+    # T06: 만료 경고 액션 토스트 (쿠키를 갱신하세요, 🍪/N 아이콘 버튼 및 툴팁)
     toast.show_action_toast(
-        "저장된 네이버 쿠키가 만료되었습니다.",
+        "쿠키를 갱신하세요",
         buttons=[
-            ("쿠키 설정", "#374151", lambda: None),
-            ("네이버 로그인", "#03c75a", lambda: None),
+            ("🍪", "#3b82f6", lambda: None, "쿠키 설정"),
+            ("N", "#03c75a", lambda: None, "네이버 로그인"),
         ],
     )
     assert toast.isHidden() is False
-    assert "저장된 네이버 쿠키가 만료되었습니다." in toast.label.text()
+    assert "쿠키를 갱신하세요" in toast.label.text()
     assert len(toast._action_buttons) == 2
-    assert toast._action_buttons[0].text() == "쿠키 설정"
-    assert toast._action_buttons[1].text() == "네이버 로그인"
+    assert toast._action_buttons[0].text() == "🍪"
+    assert toast._action_buttons[0].toolTip() == "쿠키 설정"
+    assert toast._action_buttons[1].text() == "N"
+    assert toast._action_buttons[1].toolTip() == "네이버 로그인"
 
 
 # 3. 쇼케이스 윈도우 무결성 검증
@@ -124,7 +130,10 @@ def test_feedback_showcase_window_initialization(qtbot):
     assert "[T01] URL 추가 토스트 호출" in window.log_edit.toPlainText()
 
     window._demo_toast_reanalyze_success()
-    assert "[T02] 쿠키 재분석 안내 토스트 호출" in window.log_edit.toPlainText()
+    assert (
+        "[T02] 쿠키 재분석 토스트는 백그라운드 자동 재분석으로 전환"
+        in window.log_edit.toPlainText()
+    )
 
 
 def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
@@ -180,3 +189,162 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
             assert title in ("", "Chzzk Downloader"), (
                 f"macOS 쇼케이스 모달 타이틀 예외 불일치: {title}"
             )
+
+
+def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot):
+    """M04 모달 문구 및 작업 카드의 뱃지/에러툴팁/인증버튼/좌측컬러바 검증."""
+    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/12345",
+        status=TaskStatus.FAILED_LOGIN_REQUIRED,
+    )
+    qtbot.addWidget(card)
+
+    # 1. 2줄 텍스트 및 빨간색 좌측 5px 바 검증 (3번 위치 상태 라벨 숨김 검증)
+    assert "Login required; Please login\n" in card.title_label.text()
+    assert "border-left: 5px solid #ef4444" in card.styleSheet()
+    assert card.status_label.isHidden() is True
+    assert card.status_label.text() == ""
+
+    # 2. 치지직 뱃지 (툴팁 없음, 클릭 가능)
+    assert card.chzzk_badge.text() == "Z"
+    assert card.chzzk_badge.toolTip() == ""
+    assert card.chzzk_badge.width() == 24
+    assert card.chzzk_badge.height() == 22
+
+    # 3. 말풍선 에러 버튼 (툴팁 "작업 정보")
+    assert card.error_info_btn.text() == "🗨️!"
+    assert card.error_info_btn.toolTip() == "작업 정보"
+    assert card.error_info_btn.width() == 24
+    assert card.error_info_btn.height() == 22
+
+    # 4. 인증 버튼 아이콘화 및 툴팁 검증
+    assert card.cookie_btn.text() == "🍪"
+    assert card.cookie_btn.toolTip() == "쿠키 설정"
+    assert card.cookie_btn.width() == 24
+    assert card.cookie_btn.height() == 22
+
+    assert card.login_btn.text() == "N"
+    assert card.login_btn.toolTip() == "네이버 로그인"
+    assert card.login_btn.width() == 24
+    assert card.login_btn.height() == 22
+
+
+def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot):
+    """모든 토스트가 검은 배경을 사용하고, 고정 최소너비 없이 내용 맞춤형 컴팩트 알약(Dynamic Pill) 크기를 유지하는지 검증."""
+    container = FeedbackShowcaseWindow()
+    qtbot.addWidget(container)
+    toast: ToastWidget = container.toast
+
+    # T01 URL 토스트 (자동 소멸 시 닫기 버튼 숨김 및 다크 테마 검증)
+    msg = (
+        '<span style="color: #3b82f6; font-weight: bold; font-size: 14px;">+</span> '
+        '<span style="color: #ffffff;">https://chzzk.naver.com/video/15016450</span>'
+    )
+    toast.show_toast(msg, ToastType.SUCCESS, auto_dismiss_ms=2000)
+    style = toast.styleSheet()
+    assert "rgba(20, 20, 20, 230)" in style
+    assert toast.close_btn.isHidden() is True
+
+    # T03 경고 토스트 (짧은 문구는 불필요하게 480px로 늘어나지 않고 컴팩트한 알약 크기 유지)
+    toast.show_toast("⚠️ 이미 추가한 작업입니다.", ToastType.WARNING)
+    style_warning = toast.styleSheet()
+    assert "rgba(20, 20, 20, 230)" in style_warning
+    assert toast.width() < 400  # 휑한 480px 빈 공간 없이 컴팩트함
+
+    # T06 액션 토스트 (닫기 버튼 노출 및 쿠키 아이콘 배경 제거 검증)
+    toast.show_action_toast(
+        "쿠키를 갱신하세요",
+        buttons=[
+            ("🍪", "transparent", lambda: None, "쿠키 설정"),
+            ("N", "#03c75a", lambda: None, "네이버 로그인"),
+        ],
+    )
+    assert toast.close_btn.isHidden() is False
+    assert len(toast._action_buttons) == 2
+    cookie_btn = toast._action_buttons[0]
+    assert "background-color: transparent" in cookie_btn.styleSheet()
+
+
+def test_feedback_showcase_task_card_gallery_tab(qtbot):
+    """피드백 쇼케이스 창에 작업 카드 갤러리 탭이 구성되어 있고 7대 카드가 렌더링되는지 검증."""
+    window = FeedbackShowcaseWindow()
+    qtbot.addWidget(window)
+
+    assert window.tabs.count() == 2
+    assert "토스트" in window.tabs.tabText(0)
+    assert "작업 목록 카드" in window.tabs.tabText(1)
+
+
+def test_task_info_window_modeless_and_diagnostic_format(qtbot):
+    """말풍선 에러 버튼 클릭 시 비모달 진단 팝업 창이 뜨고 사용자 요청 포맷대로 텍스트가 채워지는지 검증."""
+    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15070093",
+        status=TaskStatus.FAILED_LOGIN_REQUIRED,
+    )
+    qtbot.addWidget(card)
+    card.set_failed(
+        TaskStatus.FAILED_LOGIN_REQUIRED, "Login required to access this 19+ video"
+    )
+
+    # 팝업 열기
+    card.open_task_info_window()
+    assert hasattr(card, "_info_win")
+    assert card._info_win is not None
+    info_win = card._info_win
+    qtbot.addWidget(info_win)
+
+    # 1. 비모달 및 가시성 검증
+    assert info_win.isVisible() is True
+    assert info_win.isModal() is False
+
+    # 2. 내용 포맷 검증
+    content = info_win.text_edit.toPlainText()
+    assert "Login required; Please login" in content
+    assert "https://chzzk.naver.com/video/15070093" in content
+    assert "platform / locale:" in content
+    assert "order / group / uid:" in content
+    assert "[Messages]" in content
+    assert "LoginRequired_chzzk" in content
+
+    # 3. 클립보드 복사 버튼 검증
+    info_win._copy_to_clipboard()
+    assert "복사됨" in info_win.copy_btn.text()
+    info_win.close()
+
+
+def test_task_card_chzzk_badge_confirm_modal_and_browser(qtbot, monkeypatch):
+    """치지직 뱃지 클릭 시 확인/취소 모달 승인 후 브라우저 URL 오픈 검증."""
+    from PyQt6.QtGui import QDesktopServices
+
+    import chzzk_downloader.gui.task_card
+    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15070093",
+        status=TaskStatus.FAILED_INVALID,
+    )
+    qtbot.addWidget(card)
+
+    opened_urls: list[str] = []
+
+    # 1) 확인 모달 승인 모킹
+    def mock_ask(*args, **kwargs):
+        return True
+
+    # 2) QDesktopServices.openUrl 모킹
+    def mock_open_url(url):
+        opened_urls.append(url.toString())
+        return True
+
+    monkeypatch.setattr(chzzk_downloader.gui.task_card, "ask_confirm_dialog", mock_ask)
+    monkeypatch.setattr(QDesktopServices, "openUrl", mock_open_url)
+
+    # 뱃지 클릭
+    card.chzzk_badge.click()
+
+    assert len(opened_urls) == 1
+    assert opened_urls[0] == "https://chzzk.naver.com/video/15070093"

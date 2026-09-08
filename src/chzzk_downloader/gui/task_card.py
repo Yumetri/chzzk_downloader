@@ -77,6 +77,7 @@ class TaskStatus(Enum):
     STOPPED = "STOPPED"
     FAILED_INVALID = "FAILED_INVALID"
     FAILED_LOGIN_REQUIRED = "FAILED_LOGIN_REQUIRED"
+    FAILED_DOWNLOAD = "FAILED_DOWNLOAD"
 
 
 class SpinnerWidget(QWidget):
@@ -272,26 +273,54 @@ class TaskCardWidget(QFrame):
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(6)
 
-        # 4-1. 인증 필요 컨테이너
+        # 4-1. 실패/오류/인증 필요 컨테이너 ([치지직 뱃지] [🗨️! 에러상세] [🍪] [N])
         self.auth_container = QWidget(self.action_container)
         auth_layout = QHBoxLayout(self.auth_container)
         auth_layout.setContentsMargins(0, 0, 0, 0)
         auth_layout.setSpacing(6)
 
-        self.cookie_btn = QPushButton("쿠키 설정", self.auth_container)
+        # 치지직 플랫폼 뱃지 (클릭 시 확인/취소 모달 후 해당 URL 브라우저 이동, 툴팁 없음)
+        self.chzzk_badge = QPushButton("Z", self.auth_container)
+        self.chzzk_badge.setFixedSize(24, 22)
+        self.chzzk_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chzzk_badge.setStyleSheet(
+            "QPushButton { background-color: #000000; color: #00ffa3; border: none; border-radius: 3px; font-weight: 900; font-size: 11px; padding: 0; }"
+            "QPushButton:hover { background-color: #1f2937; }"
+        )
+        self.chzzk_badge.clicked.connect(self._on_chzzk_badge_clicked)
+
+        # 말풍선 에러 상세 툴팁 버튼 (툴팁 "작업 정보", 클릭 시 비모달 진단 팝업 오픈)
+        self.error_info_btn = QPushButton("🗨️!", self.auth_container)
+        self.error_info_btn.setFixedSize(24, 22)
+        self.error_info_btn.setToolTip("작업 정보")
+        self.error_info_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.error_info_btn.setStyleSheet(
+            "QPushButton { background-color: #374151; color: #d1d5db; border: none; border-radius: 3px; font-weight: bold; font-size: 11px; padding: 0; }"
+            "QPushButton:hover { background-color: #4b5563; color: white; }"
+        )
+        self.error_info_btn.clicked.connect(self.open_task_info_window)
+
+        self.cookie_btn = QPushButton("🍪", self.auth_container)
+        self.cookie_btn.setFixedSize(24, 22)
+        self.cookie_btn.setToolTip("쿠키 설정")
         self.cookie_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cookie_btn.setStyleSheet(
-            "QPushButton { background-color: #3b82f6; color: white; border: none; border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
-            "QPushButton:hover { background-color: #2563eb; }"
+            "QPushButton { background-color: transparent; border: none; font-size: 14px; padding: 0; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.15); border-radius: 3px; }"
         )
-        self.login_btn = QPushButton("네이버 로그인", self.auth_container)
+        self.login_btn = QPushButton("N", self.auth_container)
+        self.login_btn.setFixedSize(24, 22)
+        self.login_btn.setToolTip("네이버 로그인")
         self.login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.login_btn.setStyleSheet(
-            "QPushButton { background-color: #03c75a; color: white; border: none; border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
+            "QPushButton { background-color: #03c75a; color: white; border: none; border-radius: 3px; font-size: 12px; font-weight: 900; }"
             "QPushButton:hover { background-color: #02b150; }"
         )
         self.cookie_btn.clicked.connect(self.request_open_cookies.emit)
         self.login_btn.clicked.connect(self.request_naver_login.emit)
+
+        auth_layout.addWidget(self.chzzk_badge)
+        auth_layout.addWidget(self.error_info_btn)
         auth_layout.addWidget(self.cookie_btn)
         auth_layout.addWidget(self.login_btn)
         self.auth_container.hide()
@@ -527,9 +556,7 @@ class TaskCardWidget(QFrame):
         """동일 파일명 존재 시 처리 방법('overwrite', 'rename', 'cancel')을 묻는 대화상자를 띄웁니다."""
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Chzzk Downloader")
-        msg_box.setText(
-            f"이미 동일한 이름의 파일이 존재합니다:\n{filename}\n\n어떻게 처리하시겠습니까?"
-        )
+        msg_box.setText(f"이미 동일한 이름의 파일이 존재합니다:\n{filename}")
         overwrite_btn = msg_box.addButton("덮어쓰기", QMessageBox.ButtonRole.AcceptRole)
         rename_btn = msg_box.addButton("이름 변경", QMessageBox.ButtonRole.ActionRole)
         msg_box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
@@ -630,6 +657,7 @@ class TaskCardWidget(QFrame):
         if self.status == TaskStatus.ANALYZING:
             # 유저 요구사항: 읽는 중… URL
             self.title_label.setText(f"읽는 중… {self.raw_url}")
+            self.status_label.show()
             self.status_label.setText("분석 중...")
             self.auth_container.hide()
             self.ready_container.hide()
@@ -638,6 +666,7 @@ class TaskCardWidget(QFrame):
             self.thumb_label.setText("분석 중")
 
         elif self.status == TaskStatus.READY:
+            self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
                 dur_str = format_duration(self.vod_info.duration)
@@ -653,6 +682,7 @@ class TaskCardWidget(QFrame):
                 self.thumb_label.setText("VOD")
 
         elif self.status == TaskStatus.DOWNLOADING:
+            self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
                 dur_str = format_duration(self.vod_info.duration)
@@ -666,6 +696,7 @@ class TaskCardWidget(QFrame):
             self.spinner.start()
 
         elif self.status == TaskStatus.STOPPED:
+            self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
                 dur_str = format_duration(self.vod_info.duration)
@@ -684,22 +715,55 @@ class TaskCardWidget(QFrame):
                 self.thumb_label.setText("VOD")
 
         elif self.status == TaskStatus.FAILED_LOGIN_REQUIRED:
-            self.title_label.setText(f"Login required; Please login: {self.raw_url}")
-            self.status_label.setText("로그인 필요")
+            self.title_label.setText(f"Login required; Please login\n{self.raw_url}")
+            # C06: 3번 위치 상태 표시는 불필요하므로 숨김
+            self.status_label.setText("")
+            self.status_label.hide()
             self.auth_container.show()
+            self.chzzk_badge.show()
+            self.error_info_btn.show()
+            self.error_info_btn.setToolTip("작업 정보")
+            self.cookie_btn.show()
+            self.login_btn.show()
             self.ready_container.hide()
             self.downloading_container.hide()
             self.spinner.stop()
             self.thumb_label.setText("인증 필요")
 
         elif self.status == TaskStatus.FAILED_INVALID:
-            self.title_label.setText(f"Invalid: {self.raw_url}")
-            self.status_label.setText(self.error_message or "분석 실패")
-            self.auth_container.hide()
+            self.title_label.setText(f"Invalid: [chzzk] {self.raw_url}")
+            # C05: 3번 위치 상태 표시는 불필요하므로 숨김
+            self.status_label.setText("")
+            self.status_label.hide()
+            self.auth_container.show()
+            self.chzzk_badge.show()
+            self.error_info_btn.show()
+            self.error_info_btn.setToolTip("작업 정보")
+            self.cookie_btn.hide()
+            self.login_btn.hide()
             self.ready_container.hide()
             self.downloading_container.hide()
             self.spinner.stop()
             self.thumb_label.setText("✕")
+
+        elif self.status == TaskStatus.FAILED_DOWNLOAD:
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
+            else:
+                self.title_label.setText(f"Download failed: {self.raw_url}")
+            # C07: 3번 위치 상태 표시는 불필요하므로 숨김
+            self.status_label.setText("")
+            self.status_label.hide()
+            self.auth_container.show()
+            self.chzzk_badge.show()
+            self.error_info_btn.show()
+            self.error_info_btn.setToolTip("작업 정보")
+            self.cookie_btn.hide()
+            self.login_btn.hide()
+            self.ready_container.hide()
+            self.downloading_container.hide()
+            self.spinner.stop()
+            self.thumb_label.setText("실패")
 
     def _apply_style(self) -> None:
         """상태에 따라 카드의 테두리 및 배경 하이라이트를 적용합니다."""
@@ -707,22 +771,45 @@ class TaskCardWidget(QFrame):
             TaskStatus.FAILED_INVALID,
             TaskStatus.FAILED_LOGIN_REQUIRED,
         ):
-            # 빨간색 시각적 하이라이트 스타일
+            # 빨간색 좌측 5px 바 + 은은한 레드 틴트 배경
             self.setStyleSheet(
                 "#TaskCardWidget {"
-                "  background-color: rgba(239, 68, 68, 0.12);"
-                "  border: 1px solid #ef4444;"
+                "  background-color: rgba(239, 68, 68, 0.10);"
+                "  border: 1px solid rgba(239, 68, 68, 0.35);"
+                "  border-left: 5px solid #ef4444;"
                 "  border-radius: 6px;"
                 "}"
             )
             self.title_label.setStyleSheet(
                 "color: #ef4444; font-size: 13px; font-weight: 600;"
             )
+            self.status_label.setStyleSheet(
+                "color: #ef4444; font-size: 11px; font-weight: 500;"
+            )
             self.thumb_label.setStyleSheet(
                 "background-color: rgba(239, 68, 68, 0.2); color: #ef4444; border-radius: 4px; font-weight: bold; font-size: 12px;"
             )
+        elif self.status == TaskStatus.FAILED_DOWNLOAD:
+            # 주황색 좌측 5px 바 + 은은한 주황색 틴트 배경 (T0110 대응)
+            self.setStyleSheet(
+                "#TaskCardWidget {"
+                "  background-color: rgba(245, 158, 11, 0.10);"
+                "  border: 1px solid rgba(245, 158, 11, 0.35);"
+                "  border-left: 5px solid #f59e0b;"
+                "  border-radius: 6px;"
+                "}"
+            )
+            self.title_label.setStyleSheet(
+                "color: #f59e0b; font-size: 13px; font-weight: 600;"
+            )
+            self.status_label.setStyleSheet(
+                "color: #f59e0b; font-size: 11px; font-weight: 500;"
+            )
+            self.thumb_label.setStyleSheet(
+                "background-color: rgba(245, 158, 11, 0.2); color: #f59e0b; border-radius: 4px; font-weight: bold; font-size: 12px;"
+            )
         else:
-            # 기본 정상 카드 스타일
+            # 기본 정상 카드 스타일 (읽는 중, 다운로드 중 등 현행 유지)
             self.setStyleSheet(
                 "#TaskCardWidget {"
                 "  background-color: #1e1e1e;"
@@ -737,6 +824,7 @@ class TaskCardWidget(QFrame):
             self.title_label.setStyleSheet(
                 "color: #f3f4f6; font-size: 13px; font-weight: 600;"
             )
+            self.status_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
             self.thumb_label.setStyleSheet(
                 "background-color: #2a2a2a; color: #888888; border-radius: 4px; font-weight: bold; font-size: 12px;"
             )
@@ -764,3 +852,31 @@ class TaskCardWidget(QFrame):
         self.error_message = error_message
         self._update_display()
         self._apply_style()
+
+    def _on_chzzk_badge_clicked(self) -> None:
+        """치지직 뱃지 클릭 핸들러: 확인/취소 모달 후 기본 브라우저로 해당 URL 이동."""
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        ok = ask_confirm_dialog(
+            parent=self,
+            text=f"해당 링크로 이동합니다.\n\n이동하시겠습니까?\n{self.raw_url}",
+            title="Chzzk Downloader",
+        )
+        if ok:
+            QDesktopServices.openUrl(QUrl(self.raw_url))
+
+    def open_task_info_window(self) -> None:
+        """작업 정보 비모달 윈도우를 엽니다 (최소화/최대화 가능, 메인 창 조작 영향 없음)."""
+        from chzzk_downloader.gui.task_info_window import TaskInfoWindow
+
+        if (
+            not hasattr(self, "_info_win")
+            or self._info_win is None
+            or not self._info_win.isVisible()
+        ):
+            self._info_win = TaskInfoWindow(self)
+            self._info_win.show()
+        else:
+            self._info_win.activateWindow()
+            self._info_win.raise_()

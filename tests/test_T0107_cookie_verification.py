@@ -220,8 +220,10 @@ def test_main_window_startup_verification_expired_shows_action_toast(
         # 워커 종료 및 액션 토스트 노출 대기
         qtbot.waitUntil(lambda: window.toast.isHidden() is False, timeout=2000)
         assert window.toast._is_action_mode is True
-        assert "만료되었습니다" in window.toast.label.text()
+        assert "쿠키를 갱신하세요" in window.toast.label.text()
         assert len(window.toast._action_buttons) == 2
+        assert window.toast._action_buttons[0].text() == "🍪"
+        assert window.toast._action_buttons[1].text() == "N"
 
         # [쿠키 설정] 버튼 클릭 -> Modeless 설정 창 오픈 검증
         window.toast._action_buttons[0].click()
