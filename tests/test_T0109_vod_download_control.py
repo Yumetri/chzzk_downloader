@@ -447,7 +447,7 @@ def test_rapid_successive_same_url_inputs_blocked(main_window, qtbot):
             assert "이미 추가한 작업입니다." in main_window.toast.label.text()
 
         # 3. 비동기 VOD 분석 완료 후(DOWNLOADING)에도 동일 URL 입력 차단 검증
-        qtbot.waitUntil(lambda: main_window.download_btn.isEnabled(), timeout=2000)
+        qtbot.waitUntil(lambda: card.status == TaskStatus.DOWNLOADING, timeout=5000)
         assert card.status == TaskStatus.DOWNLOADING
 
         main_window.url_input.setText(test_url)

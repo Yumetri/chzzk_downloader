@@ -22,6 +22,8 @@ class AppSettings:
     default_quality: str = "최고 화질"
     file_extension: str = ".mp4"
     vod_auto_download: bool = True
+    ffmpeg_path: str = ""
+    ffprobe_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """JSON 직렬화를 위한 딕셔너리로 변환합니다."""
@@ -30,6 +32,8 @@ class AppSettings:
             "default_quality": self.default_quality,
             "file_extension": self.file_extension,
             "vod_auto_download": self.vod_auto_download,
+            "ffmpeg_path": self.ffmpeg_path,
+            "ffprobe_path": self.ffprobe_path,
         }
 
     @classmethod
@@ -43,11 +47,15 @@ class AppSettings:
         if ext not in AVAILABLE_EXTENSIONS:
             ext = ".mp4"
         auto_dl = bool(data.get("vod_auto_download", True))
+        ffmpeg = str(data.get("ffmpeg_path", ""))
+        ffprobe = str(data.get("ffprobe_path", ""))
         return cls(
             download_dir=d_dir,
             default_quality=quality,
             file_extension=ext,
             vod_auto_download=auto_dl,
+            ffmpeg_path=ffmpeg,
+            ffprobe_path=ffprobe,
         )
 
 
@@ -196,6 +204,8 @@ def update_current_settings(
     default_quality: str | None = None,
     file_extension: str | None = None,
     vod_auto_download: bool | None = None,
+    ffmpeg_path: str | None = None,
+    ffprobe_path: str | None = None,
 ) -> tuple[bool, str]:
     """현재 전역 설정을 갱신하고 영속화합니다."""
     current = get_current_settings()
@@ -225,12 +235,23 @@ def update_current_settings(
         else bool(vod_auto_download)
     )
 
+    new_ffmpeg = current.ffmpeg_path if ffmpeg_path is None else str(ffmpeg_path)
+    new_ffprobe = current.ffprobe_path if ffprobe_path is None else str(ffprobe_path)
+
     updated = AppSettings(
         download_dir=new_dir,
         default_quality=new_quality,
         file_extension=new_ext,
         vod_auto_download=new_auto,
+        ffmpeg_path=new_ffmpeg,
+        ffprobe_path=new_ffprobe,
     )
     if save_settings(updated):
+        try:
+            from chzzk_downloader.core.ffmpeg_manager import clear_probe_cache
+
+            clear_probe_cache()
+        except ImportError:
+            pass
         return True, "설정이 성공적으로 저장되었습니다."
     return False, "설정 저장에 실패했습니다."

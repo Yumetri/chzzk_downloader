@@ -111,6 +111,15 @@ def test_toast_catalog_types_and_appearance(qtbot):
     assert toast._action_buttons[1].text() == "N"
     assert toast._action_buttons[1].toolTip() == "네이버 로그인"
 
+    # T07: FFmpeg 미가용 경고 토스트 (WARNING, ⚠️ 아이콘)
+    toast.show_toast(
+        '<span style="color: #f59e0b;">⚠️</span> FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요.',
+        ToastType.WARNING,
+    )
+    assert toast.isHidden() is False
+    assert "FFmpeg를 사용할 수 없습니다" in toast.label.text()
+    assert "⚠️" in toast.label.text()
+
 
 # 3. 쇼케이스 윈도우 무결성 검증
 def test_feedback_showcase_window_initialization(qtbot):
@@ -170,6 +179,7 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
 
     window._demo_modal_cookie_info()
     window._demo_modal_folder_error()
+    window._demo_modal_ffmpeg_error()
 
     # 3) M04 파일 충돌 모달 검증
     def mock_exec(self):
@@ -181,7 +191,7 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
 
     # 모든 모달의 창 제목이 "Chzzk Downloader"인지 검증
     # (macOS HIG 규격상 NSAlert는 상단 타이틀바가 없어 Qt가 windowTitle()을 빈 문자열로 반환)
-    assert len(captured_titles) == 6
+    assert len(captured_titles) == 7
     for title in captured_titles:
         if sys.platform != "darwin":
             assert title == "Chzzk Downloader", f"쇼케이스 모달 타이틀 불일치: {title}"

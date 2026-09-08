@@ -40,7 +40,7 @@ class SettingsWindow(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("환경설정")
-        self.resize(520, 460)
+        self.resize(520, 560)
         self.setModal(False)  # Modeless 창으로 메인 창 상호작용 허용
 
         self._init_ui()
@@ -123,7 +123,43 @@ class SettingsWindow(QDialog):
 
         layout.addWidget(self.general_group)
 
-        # 2. 네이버 / 치지직 쿠키 설정 그룹
+        # 2. FFmpeg 외부 도구 설정 그룹 (T0110)
+        self.ffmpeg_group = QGroupBox("FFmpeg 설정", self)
+        ffmpeg_layout = QVBoxLayout(self.ffmpeg_group)
+        ffmpeg_layout.setContentsMargins(12, 14, 12, 14)
+        ffmpeg_layout.setSpacing(10)
+
+        # 상태 라벨
+        self.ffmpeg_status_label = QLabel("상태: 확인 중...", self.ffmpeg_group)
+        self.ffmpeg_status_label.setStyleSheet("font-size: 12px; font-weight: bold;")
+        ffmpeg_layout.addWidget(self.ffmpeg_status_label)
+
+        # 경로 입력창 및 버튼 행
+        ffmpeg_row = QHBoxLayout()
+        ffmpeg_row.setSpacing(8)
+
+        self.ffmpeg_path_input = QLineEdit(self.ffmpeg_group)
+        self.ffmpeg_path_input.setReadOnly(True)
+        self.ffmpeg_path_input.setPlaceholderText("내장 번들 / 시스템 기본 (자동 탐색)")
+        ffmpeg_row.addWidget(self.ffmpeg_path_input)
+
+        self.ffmpeg_browse_btn = QPushButton("실행 파일 선택", self.ffmpeg_group)
+        self.ffmpeg_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ffmpeg_browse_btn.clicked.connect(self._on_choose_ffmpeg)
+        ffmpeg_row.addWidget(self.ffmpeg_browse_btn)
+
+        self.ffmpeg_reset_btn = QPushButton("기본값 복원", self.ffmpeg_group)
+        self.ffmpeg_reset_btn.setToolTip(
+            "내장 번들 및 시스템 기본 경로로 재설정합니다."
+        )
+        self.ffmpeg_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ffmpeg_reset_btn.clicked.connect(self._on_reset_ffmpeg)
+        ffmpeg_row.addWidget(self.ffmpeg_reset_btn)
+
+        ffmpeg_layout.addLayout(ffmpeg_row)
+        layout.addWidget(self.ffmpeg_group)
+
+        # 3. 네이버 / 치지직 쿠키 설정 그룹
         self.cookie_group = QGroupBox("네이버 / 치지직 쿠키 관리", self)
         group_layout = QVBoxLayout(self.cookie_group)
         group_layout.setContentsMargins(12, 14, 12, 14)
@@ -192,7 +228,9 @@ class SettingsWindow(QDialog):
         layout.addLayout(bottom_layout)
 
     def refresh_status(self) -> None:
-        """현재 쿠키 상태에 따라 라벨과 스타일을 갱신합니다."""
+        """현재 쿠키 및 FFmpeg 상태에 따라 라벨과 스타일을 갱신합니다."""
+        self.refresh_ffmpeg_status()
+
         from chzzk_downloader.core.cookie_manager import (
             SessionStatus,
             get_last_session_status,
@@ -337,3 +375,78 @@ class SettingsWindow(QDialog):
     def _on_auto_download_toggled(self, checked: bool) -> None:
         """VOD 자동 다운로드 토글 스위치 핸들러: 변경 즉시 영속화."""
         update_current_settings(vod_auto_download=checked)
+
+    def refresh_ffmpeg_status(self) -> None:
+        """현재 FFmpeg 상태에 따라 라벨과 스타일을 갱신합니다."""
+        from chzzk_downloader.core.ffmpeg_manager import (
+            FFmpegStatus,
+            probe_ffmpeg,
+            probe_ffprobe,
+        )
+
+        settings = get_current_settings()
+        result = probe_ffmpeg(settings.ffmpeg_path if settings.ffmpeg_path else None)
+        ffprobe_result = probe_ffprobe(
+            settings.ffprobe_path if settings.ffprobe_path else None
+        )
+
+        status_text = result.display_text
+        if (
+            result.status == FFmpegStatus.AVAILABLE
+            and ffprobe_result.status == FFmpegStatus.AVAILABLE
+        ):
+            status_text += " · FFprobe 가용"
+
+        self.ffmpeg_status_label.setText(f"상태: {status_text}")
+
+        if result.status == FFmpegStatus.AVAILABLE:
+            self.ffmpeg_status_label.setStyleSheet(
+                "color: #10b981; font-size: 12px; font-weight: bold;"
+            )
+            if settings.ffmpeg_path:
+                self.ffmpeg_path_input.setText(str(result.path))
+            else:
+                self.ffmpeg_path_input.setText(
+                    f"[자동 감지] {result.path}" if result.path else "자동 감지됨"
+                )
+        else:
+            self.ffmpeg_status_label.setStyleSheet(
+                "color: #ef4444; font-size: 12px; font-weight: bold;"
+            )
+            if settings.ffmpeg_path:
+                self.ffmpeg_path_input.setText(str(settings.ffmpeg_path))
+            else:
+                self.ffmpeg_path_input.setText("FFmpeg 바이너리를 찾을 수 없음")
+
+    def _on_choose_ffmpeg(self) -> None:
+        """파일 선택 다이얼로그를 통해 유효한 FFmpeg 바이너리 경로를 지정합니다."""
+        from chzzk_downloader.core.ffmpeg_manager import (
+            FFmpegStatus,
+            probe_ffmpeg,
+        )
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "FFmpeg 실행 파일 선택",
+            "",
+            "FFmpeg 실행 파일 (ffmpeg.exe ffmpeg);;모든 파일 (*.*)",
+        )
+        if not file_path:
+            return
+
+        result = probe_ffmpeg(file_path)
+        if result.status != FFmpegStatus.AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "Chzzk Downloader",
+                f"선택한 파일이 유효한 FFmpeg 실행 파일이 아닙니다:\n{file_path}\n\n상태: {result.status.value}",
+            )
+            return
+
+        update_current_settings(ffmpeg_path=file_path)
+        self.refresh_ffmpeg_status()
+
+    def _on_reset_ffmpeg(self) -> None:
+        """사용자 지정 FFmpeg 경로를 초기화하고 기본(내장/시스템)으로 복원합니다."""
+        update_current_settings(ffmpeg_path="")
+        self.refresh_ffmpeg_status()

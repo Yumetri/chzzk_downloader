@@ -166,6 +166,7 @@ class TaskCardWidget(QFrame):
     request_naver_login = pyqtSignal()
     download_started = pyqtSignal()
     download_stopped = pyqtSignal()
+    download_blocked = pyqtSignal(str)
 
     def __init__(
         self,
@@ -573,6 +574,14 @@ class TaskCardWidget(QFrame):
     def trigger_start_download(self) -> bool:
         """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 상태로 진입합니다."""
         if not self.vod_info:
+            return False
+
+        from chzzk_downloader.core.ffmpeg_manager import is_ffmpeg_available
+
+        if not is_ffmpeg_available(auto_download=True):
+            self.download_blocked.emit(
+                "FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요."
+            )
             return False
 
         settings = get_current_settings()

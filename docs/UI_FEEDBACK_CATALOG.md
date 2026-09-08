@@ -55,6 +55,7 @@
 | **M07** | 폴더 권한 오류 | **Chzzk Downloader** | `선택한 폴더에 쓰기 권한이 없습니다:\n{path}\n\n다른 폴더를 선택해주세요.` | `[확인(기본)]` | Warning | T0108 | `SettingsWindow._on_choose_folder` |
 | **M08** | 네이버 로그인 결과 | **Chzzk Downloader** | `로그인이 확인되어 네이버 쿠키가 저장되었습니다.`<br>`쿠키 저장 중 오류가 발생했습니다: {msg}` | `[확인(기본)]` | Info / Warning | T0106, T0107 | `NaverLoginDialog._on_save_and_close` |
 | **M09** | 외부 링크 이동 확인 | **Chzzk Downloader** | `해당 링크로 이동합니다.\n\n이동하시겠습니까?\n{url}` | `[확인(기본)]` / `[취소]` | Primary 파랑 (`#2563eb`) | T0109B | `TaskCardWidget._on_chzzk_badge_clicked` |
+| **M10** | FFmpeg 실행 파일 오류 | **Chzzk Downloader** | `선택한 파일이 유효한 FFmpeg 실행 파일이 아닙니다:\n{path}\n\n상태: {status}` | `[확인(기본)]` | Warning | T0110 | `SettingsWindow._on_choose_ffmpeg` |
 
 ---
 
@@ -68,6 +69,7 @@
 | **T04** | 지원하지 않는 URL | `ToastType.ERROR` | `Invalid: {URL}` | 없음 | 2초 자동 소멸 | T0102 | `MainWindow._on_download_clicked` |
 | **T05** | VOD 확인 실패 | `ToastType.ERROR` | `Invalid: {URL}`<br>`Login required; Please login\n{URL}` | 줄바꿈 포맷 지원 | 2초 자동 소멸 | T0102, T0103 | `MainWindow._on_vod_check_failed` |
 | **T06** | 쿠키 만료 경고 액션 | `ToastType.WARNING` | `⚠️ 쿠키를 갱신하세요` | `[🍪 쿠키설정]` `[N 네이버로그인]` `[✕]` | 사용자 조작 전까지 유지 | T0107 | `MainWindow.toast.show_action_toast` |
+| **T07** | FFmpeg 미가용 경고 | `ToastType.WARNING` | `⚠️ FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요.` | 노란색 경고 아이콘 | 2초 자동 소멸 | T0110 | `MainWindow._on_download_blocked` |
 
 ---
 
