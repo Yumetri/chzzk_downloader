@@ -1,17 +1,53 @@
-"""UI 피드백(모달 & 토스트) 카탈로그 규격 및 일관성 자동화 테스트."""
+"""UI 피드백(확인 모달 M01~M10, 토스트 T01~T07, 쇼케이스 창, 진단창 및 치지직 뱃지) GUI 테스트."""
 
 from __future__ import annotations
 
 import sys
 
+import pytest
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtWidgets import QMessageBox
+
 import chzzk_downloader.gui.feedback_showcase
+import chzzk_downloader.gui.task_card
 from chzzk_downloader.gui.dialogs import create_confirm_box
 from chzzk_downloader.gui.feedback_showcase import FeedbackShowcaseWindow
+from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
 from chzzk_downloader.gui.toast import ToastType, ToastWidget
 
 
-# 1. 확인 모달 규격 및 버튼 하이라이트 일관성 검증
-def test_confirm_modals_use_korean_confirm_cancel_and_default_highlight(qtbot):
+@pytest.mark.ticket("T0109")
+def test_confirm_modal_buttons_and_highlight(qtbot) -> None:
+    """[T0109] 모달에서 Yes/No 대신 '확인'/'취소' 버튼을 사용하고 '확인'에 기본 하이라이트가 적용되는지 검증."""
+    msg_box, confirm_btn, cancel_btn = create_confirm_box(
+        parent=None,
+        title="테스트 제목",
+        text="테스트 내용",
+    )
+    qtbot.addWidget(msg_box)
+
+    # 1. 버튼 텍스트 확인
+    assert confirm_btn.text() == "확인"
+    assert cancel_btn.text() == "취소"
+
+    # 2. 확인 버튼에 defaultButton 설정 및 하이라이트 스타일 확인
+    assert msg_box.defaultButton() == confirm_btn
+    assert "#2563eb" in confirm_btn.styleSheet()
+    assert "font-weight: bold" in confirm_btn.styleSheet()
+
+    # 3. danger 옵션(예: 쿠키 초기화) 시 빨간색 하이라이트 확인
+    danger_box, danger_confirm, _ = create_confirm_box(
+        parent=None,
+        title="위험 삭제",
+        text="정말 삭제하시겠습니까?",
+        is_danger=True,
+    )
+    qtbot.addWidget(danger_box)
+    assert danger_box.defaultButton() == danger_confirm
+    assert "#ef4444" in danger_confirm.styleSheet()
+
+
+def test_confirm_modals_use_korean_confirm_cancel_and_default_highlight(qtbot) -> None:
     """모든 질문형 모달이 Yes/No 없이 '확인'/'취소'를 사용하고 '확인'에 기본 하이라이트가 적용되는지 검증."""
     for modal_id, text, is_danger in [
         ("M01", "정말 중지하시겠습니까?", False),
@@ -26,7 +62,6 @@ def test_confirm_modals_use_korean_confirm_cancel_and_default_highlight(qtbot):
         qtbot.addWidget(msg_box)
 
         # 0. 윈도우 아웃 프레임(타이틀) Chzzk Downloader 통일 검증
-        # (macOS HIG 규격상 NSAlert는 상단 타이틀바가 없어 Qt가 windowTitle()을 빈 문자열로 반환)
         if sys.platform != "darwin":
             assert msg_box.windowTitle() == "Chzzk Downloader", (
                 f"[{modal_id}] 창 타이틀 불일치"
@@ -63,8 +98,7 @@ def test_confirm_modals_use_korean_confirm_cancel_and_default_highlight(qtbot):
         )
 
 
-# 2. 토스트 알림 생성 및 소멸 규칙 검증
-def test_toast_catalog_types_and_appearance(qtbot):
+def test_toast_catalog_types_and_appearance(qtbot) -> None:
     """토스트 카탈로그에 정의된 각 토스트 유형이 정상 생성되고 텍스트를 노출하는지 검증."""
     container = FeedbackShowcaseWindow()
     qtbot.addWidget(container)
@@ -121,8 +155,7 @@ def test_toast_catalog_types_and_appearance(qtbot):
     assert "⚠️" in toast.label.text()
 
 
-# 3. 쇼케이스 윈도우 무결성 검증
-def test_feedback_showcase_window_initialization(qtbot):
+def test_feedback_showcase_window_initialization(qtbot) -> None:
     """피드백 쇼케이스 창이 오류 없이 열리고 모든 데모 버튼이 탑재되어 있는지 검증."""
     window = FeedbackShowcaseWindow()
     qtbot.addWidget(window)
@@ -145,10 +178,8 @@ def test_feedback_showcase_window_initialization(qtbot):
     )
 
 
-def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
+def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch) -> None:
     """피드백 쇼케이스 창의 모든 모달 호출 시 'Chzzk Downloader' 타이틀이 사용되는지 검증."""
-    from PyQt6.QtWidgets import QMessageBox
-
     window = FeedbackShowcaseWindow()
     qtbot.addWidget(window)
 
@@ -189,8 +220,6 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
     monkeypatch.setattr(QMessageBox, "exec", mock_exec)
     window._demo_modal_file_conflict()
 
-    # 모든 모달의 창 제목이 "Chzzk Downloader"인지 검증
-    # (macOS HIG 규격상 NSAlert는 상단 타이틀바가 없어 Qt가 windowTitle()을 빈 문자열로 반환)
     assert len(captured_titles) == 7
     for title in captured_titles:
         if sys.platform != "darwin":
@@ -201,17 +230,15 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch):
             )
 
 
-def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot):
+def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot) -> None:
     """M04 모달 문구 및 작업 카드의 뱃지/에러툴팁/인증버튼/좌측컬러바 검증."""
-    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
-
     card = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/12345",
         status=TaskStatus.FAILED_LOGIN_REQUIRED,
     )
     qtbot.addWidget(card)
 
-    # 1. 2줄 텍스트 및 빨간색 좌측 5px 바 검증 (3번 위치 상태 라벨 숨김 검증)
+    # 1. 2줄 텍스트 및 빨간색 좌측 5px 바 검증
     assert "Login required; Please login\n" in card.title_label.text()
     assert "border-left: 5px solid #ef4444" in card.styleSheet()
     assert card.status_label.isHidden() is True
@@ -241,13 +268,13 @@ def test_m04_compact_text_and_task_card_auth_buttons_iconized(qtbot):
     assert card.login_btn.height() == 22
 
 
-def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot):
-    """모든 토스트가 검은 배경을 사용하고, 고정 최소너비 없이 내용 맞춤형 컴팩트 알약(Dynamic Pill) 크기를 유지하는지 검증."""
+def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot) -> None:
+    """모든 토스트가 검은 배경을 사용하고, 고정 최소너비 없이 내용 맞춤형 컴팩트 알약 크기를 유지하는지 검증."""
     container = FeedbackShowcaseWindow()
     qtbot.addWidget(container)
     toast: ToastWidget = container.toast
 
-    # T01 URL 토스트 (자동 소멸 시 닫기 버튼 숨김 및 다크 테마 검증)
+    # T01 URL 토스트
     msg = (
         '<span style="color: #3b82f6; font-weight: bold; font-size: 14px;">+</span> '
         '<span style="color: #ffffff;">https://chzzk.naver.com/video/15016450</span>'
@@ -257,13 +284,13 @@ def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot):
     assert "rgba(20, 20, 20, 230)" in style
     assert toast.close_btn.isHidden() is True
 
-    # T03 경고 토스트 (짧은 문구는 불필요하게 480px로 늘어나지 않고 컴팩트한 알약 크기 유지)
+    # T03 경고 토스트
     toast.show_toast("⚠️ 이미 추가한 작업입니다.", ToastType.WARNING)
     style_warning = toast.styleSheet()
     assert "rgba(20, 20, 20, 230)" in style_warning
-    assert toast.width() < 400  # 휑한 480px 빈 공간 없이 컴팩트함
+    assert toast.width() < 400
 
-    # T06 액션 토스트 (닫기 버튼 노출 및 쿠키 아이콘 배경 제거 검증)
+    # T06 액션 토스트
     toast.show_action_toast(
         "쿠키를 갱신하세요",
         buttons=[
@@ -277,7 +304,7 @@ def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot):
     assert "background-color: transparent" in cookie_btn.styleSheet()
 
 
-def test_feedback_showcase_task_card_gallery_tab(qtbot):
+def test_feedback_showcase_task_card_gallery_tab(qtbot) -> None:
     """피드백 쇼케이스 창에 작업 카드 갤러리 탭이 구성되어 있고 7대 카드가 렌더링되는지 검증."""
     window = FeedbackShowcaseWindow()
     qtbot.addWidget(window)
@@ -287,10 +314,8 @@ def test_feedback_showcase_task_card_gallery_tab(qtbot):
     assert "작업 목록 카드" in window.tabs.tabText(1)
 
 
-def test_task_info_window_modeless_and_diagnostic_format(qtbot):
+def test_task_info_window_modeless_and_diagnostic_format(qtbot) -> None:
     """말풍선 에러 버튼 클릭 시 비모달 진단 팝업 창이 뜨고 사용자 요청 포맷대로 텍스트가 채워지는지 검증."""
-    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
-
     card = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/15070093",
         status=TaskStatus.FAILED_LOGIN_REQUIRED,
@@ -326,13 +351,8 @@ def test_task_info_window_modeless_and_diagnostic_format(qtbot):
     info_win.close()
 
 
-def test_task_card_chzzk_badge_confirm_modal_and_browser(qtbot, monkeypatch):
+def test_task_card_chzzk_badge_confirm_modal_and_browser(qtbot, monkeypatch) -> None:
     """치지직 뱃지 클릭 시 확인/취소 모달 승인 후 브라우저 URL 오픈 검증."""
-    from PyQt6.QtGui import QDesktopServices
-
-    import chzzk_downloader.gui.task_card
-    from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
-
     card = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/15070093",
         status=TaskStatus.FAILED_INVALID,
