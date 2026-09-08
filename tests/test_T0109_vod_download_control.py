@@ -207,7 +207,7 @@ def test_vod_auto_download_off_shows_waiting_controls(main_window, qtbot):
 
 
 # 6. 시작 아이콘(▶) 클릭 시 다운로드 시작 및 파일 중복 처리(옵션 A) 검증
-def test_start_download_and_file_duplicate_handling(qtbot, tmp_path):
+def test_start_download_and_file_duplicate_handling(qtbot, tmp_path, temp_settings_env):
     """파일 중복 시 덮어쓰기 / 이름변경 / 취소 분기 및 UI 상태 전이 검증."""
     save_dir = tmp_path / "downloads"
     save_dir.mkdir()

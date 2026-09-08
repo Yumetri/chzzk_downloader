@@ -6,7 +6,6 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
-from PyQt6.QtWidgets import QMessageBox
 
 from chzzk_downloader.core.ffmpeg_manager import (
     FFmpegProbeResult,
@@ -132,7 +131,10 @@ def test_ffmpeg_probe_older_version_without_picky(tmp_path):
         assert result.supports_extension_picky is False
         assert result.supports_allowed_extensions is True
         assert result.compatible_args == ["-allowed_extensions", "ALL"]
-        assert result.display_text == "사용 가능 (FFmpeg 6.0-essentials_build-www.gyan.dev)"
+        assert (
+            result.display_text
+            == "사용 가능 (FFmpeg 6.0-essentials_build-www.gyan.dev)"
+        )
 
 
 def test_ffmpeg_probe_file_not_found(tmp_path):
@@ -271,68 +273,20 @@ def test_settings_save_and_reload_ffmpeg_path(test_settings_env, tmp_path):
     assert get_current_settings().ffmpeg_path == ""
 
 
-def test_settings_window_ui_ffmpeg_interaction(qtbot, test_settings_env, tmp_path):
-    """SettingsWindow 내 FFmpeg 상태 표기, 파일 선택 다이얼로그, 유효성 검증 및 거부 테스트."""
+def test_settings_window_clean_without_ffmpeg_widget(qtbot, test_settings_env):
+    """SettingsWindow가 불필요한 FFmpeg 수동 설정 위젯 없이 깔끔하게 일반/쿠키만 구성되는지 검증."""
     window = SettingsWindow()
     qtbot.addWidget(window)
     window.show()
 
-    # 1. UI 위젯 배치 확인
-    assert hasattr(window, "ffmpeg_group")
-    assert hasattr(window, "ffmpeg_status_label")
-    assert hasattr(window, "ffmpeg_path_input")
-    assert hasattr(window, "ffmpeg_browse_btn")
-    assert hasattr(window, "ffmpeg_reset_btn")
+    # FFmpeg 수동 설정 위젯은 제거되어 존재하지 않음 (Zero-Config 자동 관리)
+    assert not hasattr(window, "ffmpeg_group")
+    assert not hasattr(window, "ffmpeg_status_label")
+    assert not hasattr(window, "ffmpeg_browse_btn")
 
-    # 2. 유효하지 않은 바이너리 선택 시 경고 팝업 및 저장 거부 검증 (M10)
-    fake_bad_bin = tmp_path / "not_ffmpeg.exe"
-    fake_bad_bin.write_text("bad", encoding="utf-8")
-
-    with patch(
-        "PyQt6.QtWidgets.QFileDialog.getOpenFileName",
-        return_value=(str(fake_bad_bin), ""),
-    ):
-        with patch.object(QMessageBox, "warning") as mock_warn:
-            with patch(
-                "chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg",
-                return_value=FFmpegProbeResult(
-                    status=FFmpegStatus.EXECUTION_FAILED,
-                    error_message="바이너리가 아님",
-                ),
-            ):
-                window.ffmpeg_browse_btn.click()
-                mock_warn.assert_called_once()
-                assert mock_warn.call_args[0][1] == "Chzzk Downloader"
-                assert "유효한 FFmpeg 실행 파일이 아닙니다" in mock_warn.call_args[0][2]
-
-    assert get_current_settings().ffmpeg_path == ""
-
-    # 3. 유효한 FFmpeg 바이너리 선택 시 정상 저장 및 초록색 상태 갱신 검증
-    fake_good_bin = tmp_path / "ffmpeg.exe"
-    fake_good_bin.write_text("good", encoding="utf-8")
-
-    with patch(
-        "PyQt6.QtWidgets.QFileDialog.getOpenFileName",
-        return_value=(str(fake_good_bin), ""),
-    ):
-        with patch(
-            "chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg",
-            return_value=FFmpegProbeResult(
-                status=FFmpegStatus.AVAILABLE,
-                path=fake_good_bin,
-                version="6.1.1",
-                supports_extension_picky=True,
-            ),
-        ):
-            window.ffmpeg_browse_btn.click()
-
-    assert get_current_settings().ffmpeg_path == str(fake_good_bin)
-    assert "사용 가능" in window.ffmpeg_status_label.text()
-    assert "#10b981" in window.ffmpeg_status_label.styleSheet()
-
-    # 4. 기본값 복원 버튼 클릭 시 설정 초기화 검증
-    window.ffmpeg_reset_btn.click()
-    assert get_current_settings().ffmpeg_path == ""
+    # 일반 설정 및 쿠키 관리 그룹만 유지
+    assert hasattr(window, "general_group")
+    assert hasattr(window, "cookie_group")
 
 
 def test_download_blocked_when_ffmpeg_unavailable(qtbot):
@@ -405,18 +359,25 @@ def test_ffprobe_probe_not_found_and_failure(tmp_path):
     # 2. 타임아웃
     fake_bin = tmp_path / "ffprobe.exe"
     fake_bin.write_text("binary", encoding="utf-8")
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ffprobe", timeout=3.0)):
+    with patch(
+        "subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="ffprobe", timeout=3.0),
+    ):
         res2 = probe_ffprobe(fake_bin)
         assert res2.status == FFmpegStatus.TIMEOUT
 
     # 3. 비정상 종료
-    fail_proc = subprocess.CompletedProcess(args=["ffprobe"], returncode=1, stdout="", stderr="Error")
+    fail_proc = subprocess.CompletedProcess(
+        args=["ffprobe"], returncode=1, stdout="", stderr="Error"
+    )
     with patch("subprocess.run", return_value=fail_proc):
         res3 = probe_ffprobe(fake_bin)
         assert res3.status == FFmpegStatus.EXECUTION_FAILED
 
     # 4. 버전 파싱 실패
-    bad_proc = subprocess.CompletedProcess(args=["ffprobe"], returncode=0, stdout="not ffprobe", stderr="")
+    bad_proc = subprocess.CompletedProcess(
+        args=["ffprobe"], returncode=0, stdout="not ffprobe", stderr=""
+    )
     with patch("subprocess.run", return_value=bad_proc):
         res4 = probe_ffprobe(fake_bin)
         assert res4.status == FFmpegStatus.EXECUTION_FAILED
@@ -449,7 +410,9 @@ def test_is_ffprobe_available_and_caching(tmp_path):
         version="6.0",
     )
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.probe_ffprobe", return_value=probe_ok) as mock_probe:
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.probe_ffprobe", return_value=probe_ok
+    ) as mock_probe:
         assert is_ffprobe_available() is True
         assert get_ffprobe_path() == fake_bin
         # 캐싱되어 1회만 호출됨
@@ -467,13 +430,13 @@ def test_probe_media_file_and_verify_integrity(tmp_path):
     video_file.write_text("fake video content", encoding="utf-8")
 
     fake_json_output = (
-        '{\n'
+        "{\n"
         '  "streams": [\n'
         '    {"index": 0, "codec_type": "video", "codec_name": "h264", "duration": "120.0"},\n'
         '    {"index": 1, "codec_type": "audio", "codec_name": "aac", "duration": "120.0"}\n'
-        '  ],\n'
+        "  ],\n"
         '  "format": {"duration": "120.0", "size": "1048576"}\n'
-        '}'
+        "}"
     )
 
     mock_proc = subprocess.CompletedProcess(
@@ -483,7 +446,10 @@ def test_probe_media_file_and_verify_integrity(tmp_path):
         stderr="",
     )
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.get_ffprobe_path", return_value=tmp_path / "ffprobe.exe"):
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.get_ffprobe_path",
+        return_value=tmp_path / "ffprobe.exe",
+    ):
         with patch("subprocess.run", return_value=mock_proc):
             # 1. 정상 미디어 프로빙
             info = probe_media_file(video_file)
@@ -507,4 +473,3 @@ def test_probe_media_file_and_verify_integrity(tmp_path):
     ok_missing, msg_missing = verify_media_file_integrity(missing_file)
     assert ok_missing is False
     assert "존재하지 않습니다" in msg_missing
-

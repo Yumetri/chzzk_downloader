@@ -256,21 +256,24 @@ from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+
 class TaskType(Enum):
     VOD = auto()
     LIVE = auto()
+
 
 class TaskStatus(Enum):
     QUEUED = auto()
     ANALYZING = auto()
     READY = auto()
     DOWNLOADING = auto()
-    RECORDING = auto()       # 실시간 라이브 녹화 중
+    RECORDING = auto()  # 실시간 라이브 녹화 중
     STOPPED = auto()
     COMPLETED = auto()
     FAILED_INVALID = auto()
     FAILED_LOGIN_REQUIRED = auto()
     FAILED_DOWNLOAD = auto()
+
 
 @dataclass
 class TaskProgress:
@@ -280,6 +283,7 @@ class TaskProgress:
     elapsed_seconds: float = 0.0
     eta_seconds: Optional[float] = None
     percent: float = 0.0
+
 
 @dataclass
 class LiveStreamerEntry:

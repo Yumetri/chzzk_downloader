@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from enum import StrEnum
-import json
 from pathlib import Path
 from typing import Any
 
 from chzzk_downloader.config import (
     DEFAULT_FFMPEG_BINARY_NAME,
+    DEFAULT_FFMPEG_DOWNLOAD_URL,
     DEFAULT_FFPROBE_BINARY_NAME,
+    DEFAULT_USER_AGENT,
+    FFMPEG_DOWNLOAD_TIMEOUT_SEC,
     FFMPEG_PROBE_TIMEOUT_SEC,
 )
 
@@ -247,6 +252,112 @@ def probe_ffmpeg(
     )
 
 
+def get_default_ffmpeg_install_dir() -> Path:
+    """자동 다운로드된 FFmpeg 바이너리를 저장할 기본 디렉터리를 반환합니다."""
+    install_dir = Path.home() / ".chzzk_downloader" / "bin"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    return install_dir
+
+
+def download_ffmpeg_binary(
+    target_dir: Path | str | None = None,
+    download_url: str | None = None,
+    timeout: float = FFMPEG_DOWNLOAD_TIMEOUT_SEC,
+) -> Path | None:
+    """6단계: 원격에서 FFmpeg 바이너리를 다운로드하여 로컬에 설치하고 유효성을 검증합니다."""
+    global _cached_probe_result
+    dest_dir = Path(target_dir) if target_dir else get_default_ffmpeg_install_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    url = download_url or DEFAULT_FFMPEG_DOWNLOAD_URL
+
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": DEFAULT_USER_AGENT},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+    except Exception:
+        return None
+
+    if not data:
+        return None
+
+    target_bin = dest_dir / DEFAULT_FFMPEG_BINARY_NAME
+
+    # ZIP 아카이브인지 직접 바이너리인지 판별
+    if data.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for member in zf.namelist():
+                    norm_name = Path(member).name.lower()
+                    if norm_name == DEFAULT_FFMPEG_BINARY_NAME.lower():
+                        with (
+                            zf.open(member) as source,
+                            open(target_bin, "wb") as target,
+                        ):
+                            shutil.copyfileobj(source, target)
+                    elif norm_name == DEFAULT_FFPROBE_BINARY_NAME.lower():
+                        target_ffprobe = dest_dir / DEFAULT_FFPROBE_BINARY_NAME
+                        with (
+                            zf.open(member) as source,
+                            open(target_ffprobe, "wb") as target,
+                        ):
+                            shutil.copyfileobj(source, target)
+        except Exception:
+            return None
+    else:
+        try:
+            target_bin.write_bytes(data)
+        except Exception:
+            return None
+
+    if not target_bin.exists():
+        return None
+
+    # 실행 권한 부여
+    try:
+        os.chmod(target_bin, 0o755)
+    except Exception:
+        pass
+
+    probe_res = probe_ffmpeg(target_bin)
+    if probe_res.status == FFmpegStatus.AVAILABLE:
+        _cached_probe_result = probe_res
+        return target_bin
+
+    return None
+
+
+def ensure_ffmpeg_available(
+    auto_download: bool = True,
+    target_dir: Path | str | None = None,
+    download_url: str | None = None,
+) -> tuple[bool, Path | None]:
+    """1~5단계 탐색 후 부재 시 6단계 자동 다운로드를 수행하여 FFmpeg 가용성을 보장합니다.
+
+    Returns:
+        (가용 여부: bool, 가용한 바이너리 경로: Path | None)
+    """
+    # 1~5단계 탐색
+    resolved = resolve_ffmpeg_path()
+    if resolved:
+        probe_res = probe_ffmpeg(resolved)
+        if probe_res.status == FFmpegStatus.AVAILABLE:
+            return True, resolved
+
+    # 1~5단계 실패 시 6단계 자동 다운로드 시도
+    if auto_download:
+        downloaded = download_ffmpeg_binary(
+            target_dir=target_dir, download_url=download_url
+        )
+        if downloaded:
+            return True, downloaded
+
+    return False, None
+
+
 def is_ffmpeg_available(
     ffmpeg_path: Path | str | None = None,
     force_recheck: bool = False,
@@ -261,7 +372,14 @@ def is_ffmpeg_available(
     if _cached_probe_result is None or force_recheck:
         _cached_probe_result = probe_ffmpeg(None)
 
-    return _cached_probe_result.status == FFmpegStatus.AVAILABLE
+    if _cached_probe_result.status == FFmpegStatus.AVAILABLE:
+        return True
+
+    if auto_download:
+        ok, _ = ensure_ffmpeg_available(auto_download=True)
+        return ok
+
+    return False
 
 
 def get_ffmpeg_compatible_args(
@@ -580,5 +698,7 @@ def verify_media_file_integrity(
         True,
         f"검증 완료 (스트림 {len(streams)}개: 비디오={has_video}, 오디오={has_audio})",
     )
-    return True, f"검증 완료 (스트림 {len(streams)}개: 비디오={has_video}, 오디오={has_audio})"
-
+    return (
+        True,
+        f"검증 완료 (스트림 {len(streams)}개: 비디오={has_video}, 오디오={has_audio})",
+    )

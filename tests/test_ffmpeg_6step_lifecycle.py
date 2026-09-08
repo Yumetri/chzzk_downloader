@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
 import subprocess
 import sys
 import zipfile
@@ -16,12 +15,9 @@ from chzzk_downloader.config import (
     DEFAULT_FFMPEG_BINARY_NAME,
 )
 from chzzk_downloader.core.ffmpeg_manager import (
-    FFmpegProbeResult,
-    FFmpegStatus,
     clear_probe_cache,
     download_ffmpeg_binary,
     ensure_ffmpeg_available,
-    is_ffmpeg_available,
     resolve_ffmpeg_path,
 )
 from chzzk_downloader.core.settings_manager import (
@@ -109,7 +105,9 @@ def stub_subprocess_ffmpeg_probe(executable_path: Path):
                     stdout="HLS demuxer AVOptions:\n  -allowed_extensions <string>\n",
                     stderr="",
                 )
-        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="not found")
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="not found"
+        )
 
     return mock_run
 
@@ -240,7 +238,9 @@ def test_step5_system_path_which_and_download_proceeds(clean_env, monkeypatch, q
     step5_bin = system_path_dir / DEFAULT_FFMPEG_BINARY_NAME
     step5_bin.write_text("fake_step5_ffmpeg", encoding="utf-8")
 
-    monkeypatch.setattr("shutil.which", lambda cmd: str(step5_bin) if "ffmpeg" in cmd else None)
+    monkeypatch.setattr(
+        "shutil.which", lambda cmd: str(step5_bin) if "ffmpeg" in cmd else None
+    )
 
     mock_run = stub_subprocess_ffmpeg_probe(step5_bin)
     with patch("subprocess.run", side_effect=mock_run):
@@ -284,10 +284,15 @@ def test_step6_auto_download_bootstrap_success_and_download_proceeds(clean_env, 
     mock_run = stub_subprocess_ffmpeg_probe(target_bin)
 
     with patch("urllib.request.urlopen", return_value=mock_response):
-        with patch("chzzk_downloader.core.ffmpeg_manager.get_default_ffmpeg_install_dir", return_value=install_dir):
+        with patch(
+            "chzzk_downloader.core.ffmpeg_manager.get_default_ffmpeg_install_dir",
+            return_value=install_dir,
+        ):
             with patch("subprocess.run", side_effect=mock_run):
                 # ensure_ffmpeg_available 6단계 직접 검증
-                ok, bin_path = ensure_ffmpeg_available(auto_download=True, target_dir=install_dir)
+                ok, bin_path = ensure_ffmpeg_available(
+                    auto_download=True, target_dir=install_dir
+                )
                 assert ok is True
                 assert bin_path == target_bin.resolve()
                 assert target_bin.exists()
@@ -314,13 +319,20 @@ def test_step6_auto_download_bootstrap_failure_blocks_download(clean_env, qtbot)
     install_dir = clean_env / "fail_download_bin"
 
     # urllib 네트워크 오류 stub (예: 연결 실패)
-    with patch("urllib.request.urlopen", side_effect=OSError("Network connection refused")):
-        with patch("chzzk_downloader.core.ffmpeg_manager.get_default_ffmpeg_install_dir", return_value=install_dir):
+    with patch(
+        "urllib.request.urlopen", side_effect=OSError("Network connection refused")
+    ):
+        with patch(
+            "chzzk_downloader.core.ffmpeg_manager.get_default_ffmpeg_install_dir",
+            return_value=install_dir,
+        ):
             # 6단계 다운로드 실패 확인
             downloaded = download_ffmpeg_binary(target_dir=install_dir)
             assert downloaded is None
 
-            ok, bin_path = ensure_ffmpeg_available(auto_download=True, target_dir=install_dir)
+            ok, bin_path = ensure_ffmpeg_available(
+                auto_download=True, target_dir=install_dir
+            )
             assert ok is False
             assert bin_path is None
 
@@ -332,4 +344,3 @@ def test_step6_auto_download_bootstrap_failure_blocks_download(clean_env, qtbot)
             assert card.status == TaskStatus.READY  # 상태 전이 거부
             assert len(blocked) == 1
             assert "FFmpeg를 사용할 수 없습니다" in blocked[0]
-

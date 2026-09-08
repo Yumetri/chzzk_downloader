@@ -1,6 +1,7 @@
 """애플리케이션 기본 다운로드 설정 관리 모듈 (T0108)."""
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -76,8 +77,12 @@ def get_settings_file_path() -> Path:
 
 
 def get_default_download_dir() -> Path:
-    """애플리케이션 실행/GUI가 속한 폴더 하위 기본 다운로드 디렉터리 경로를 반환하고 생성합니다."""
-    default_dir = Path.cwd() / DEFAULT_DOWNLOAD_DIR_NAME
+    """애플리케이션 실행/GUI 프로그램이 위치한 폴더 하위 기본 다운로드 디렉터리 경로를 반환하고 생성합니다."""
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).resolve().parent
+    else:
+        base_dir = Path.cwd()
+    default_dir = base_dir / DEFAULT_DOWNLOAD_DIR_NAME
     try:
         default_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
