@@ -43,3 +43,10 @@ project-includes = [
 
 [tool.pyrefly.errors]
 bad-override-param-name = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ticket(id): associate a test with its originating ticket/issue ID (e.g. T0101, T0110)",
+]
+
