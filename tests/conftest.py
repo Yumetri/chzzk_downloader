@@ -28,3 +28,21 @@ def isolate_test_environment(tmp_path: Path):
     set_custom_settings_path(None)
     set_custom_cookie_path(None)
     clear_probe_cache()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """@pytest.mark.ticket("T0110") 인자를 동적 마커로 등록하여 -m "ticket and T0110" 및 -m "T0110" 선택을 지원합니다."""
+    registered: set[str] = set()
+    for item in items:
+        for marker in item.iter_markers(name="ticket"):
+            for arg in marker.args:
+                if isinstance(arg, str):
+                    if arg not in registered:
+                        config.addinivalue_line(
+                            "markers", f"{arg}: 티켓 {arg} 관련 마커"
+                        )
+                        registered.add(arg)
+                    item.add_marker(arg)
