@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -426,9 +427,13 @@ def test_is_ffprobe_available_and_caching(tmp_path):
 
 
 def test_probe_media_file_and_verify_integrity(tmp_path):
-    """probe_media_file 및 verify_media_file_integrity 스트림 검증 로직 테스트."""
+    """probe_media_file 및 verify_media_file_integrity 매직 넘버 및 재생 시간 무결성 검증 테스트."""
+    # 정상 MP4 ISO BMFF 헤더를 가진 모의 파일 생성 (ftyp 박스)
     video_file = tmp_path / "output.mp4"
-    video_file.write_text("fake video content", encoding="utf-8")
+    valid_mp4_header = (
+        b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + b"\x00" * 100
+    )
+    video_file.write_bytes(valid_mp4_header)
 
     fake_json_output = (
         "{\n"
@@ -457,20 +462,210 @@ def test_probe_media_file_and_verify_integrity(tmp_path):
             assert info is not None
             assert len(info["streams"]) == 2
 
-            # 2. 무결성 검증 성공
-            ok, msg = verify_media_file_integrity(video_file)
+            # 2. 무결성 검증 성공 (재생 시간 일치)
+            ok, msg = verify_media_file_integrity(video_file, expected_duration=120.0)
             assert ok is True
             assert "검증 완료" in msg
 
-    # 3. 0바이트 파일 실패 검증
+            # 3. 기대 재생 시간과 불일치 시 실패 검증
+            ok_diff, msg_diff = verify_media_file_integrity(
+                video_file, expected_duration=60.0
+            )
+            assert ok_diff is False
+            assert "초과합니다" in msg_diff
+
+    # 4. 가짜 텍스트 파일(.mp4 확장자 위장) 매직 바이트 차단 검증
+    fake_txt_video = tmp_path / "fake_text.mp4"
+    fake_txt_video.write_text("fake video content that is plain text", encoding="utf-8")
+    ok_txt, msg_txt = verify_media_file_integrity(fake_txt_video)
+    assert ok_txt is False
+    assert "컨테이너 헤더 검증 실패" in msg_txt
+
+    # 5. 0바이트 파일 실패 검증
     empty_file = tmp_path / "empty.mp4"
     empty_file.touch()
     ok_empty, msg_empty = verify_media_file_integrity(empty_file)
     assert ok_empty is False
     assert "0바이트" in msg_empty
 
-    # 4. 존재하지 않는 파일 검증
+    # 6. 존재하지 않는 파일 검증
     missing_file = tmp_path / "missing.mp4"
     ok_missing, msg_missing = verify_media_file_integrity(missing_file)
     assert ok_missing is False
     assert "존재하지 않습니다" in msg_missing
+
+    # 7. 재생 시간 0초(손상된 스트림) 실패 검증
+    fake_zero_dur = '{"streams": [{"codec_type": "video", "duration": "0.0"}], "format": {"duration": "0.0"}}'
+    mock_zero_proc = subprocess.CompletedProcess(
+        args=["ffprobe"], returncode=0, stdout=fake_zero_dur, stderr=""
+    )
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.get_ffprobe_path",
+        return_value=tmp_path / "ffprobe.exe",
+    ):
+        with patch("subprocess.run", return_value=mock_zero_proc):
+            ok_zero, msg_zero = verify_media_file_integrity(video_file)
+            assert ok_zero is False
+            assert "재생 시간이 비정상적입니다" in msg_zero
+
+
+def test_corrupted_intermediate_candidate_falls_back_to_valid_candidate(
+    tmp_path, monkeypatch
+):
+    """상위 계층(%TEMP%)에 손상된 바이너리가 있어도 하위 계층(PATH 등)으로 정상 폴백되는지 검증."""
+    # 1. %TEMP% 디렉터리에 실행 불가능한 더미 파일 생성
+    temp_dir = tmp_path / "temp"
+    temp_dir.mkdir()
+    corrupted_temp_ffmpeg = temp_dir / DEFAULT_FFMPEG_BINARY_NAME
+    corrupted_temp_ffmpeg.write_text("corrupted binary", encoding="utf-8")
+    monkeypatch.setenv("TEMP", str(temp_dir))
+
+    # 2. PATH에 정상 작동하는 FFmpeg 가상 경로 설정
+    valid_ffmpeg = tmp_path / "bin" / DEFAULT_FFMPEG_BINARY_NAME
+    valid_ffmpeg.parent.mkdir()
+    valid_ffmpeg.write_text("valid binary", encoding="utf-8")
+    monkeypatch.setattr(
+        "shutil.which", lambda name: str(valid_ffmpeg) if name == "ffmpeg" else None
+    )
+
+    # subprocess.run 실행 시: corrupted 실행 시 returncode 1, valid 실행 시 returncode 0
+    def mock_run(cmd, *args, **kwargs):
+        cmd_path = str(cmd[0])
+        if str(corrupted_temp_ffmpeg) in cmd_path:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1, stdout="", stderr="Corrupted ELF/PE header"
+            )
+        if str(valid_ffmpeg) in cmd_path:
+            if "-version" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout="ffmpeg version 6.1.1-essentials\n",
+                    stderr="",
+                )
+            if "-h" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout="HLS demuxer:\n  -extension_picky\n",
+                    stderr="",
+                )
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=mock_run):
+        # verify_executable=True로 검색 시 손상된 %TEMP%를 건너뛰고 PATH의 valid_ffmpeg를 반환해야 함
+        resolved = resolve_ffmpeg_path(verify_executable=True)
+        assert resolved == valid_ffmpeg.resolve()
+
+        # probe_ffmpeg(None) 역시 정상적으로 valid_ffmpeg로 판정
+        probe_res = probe_ffmpeg(None)
+        assert probe_res.status == FFmpegStatus.AVAILABLE
+        assert probe_res.path == valid_ffmpeg.resolve()
+
+
+def test_ffmpeg_bootstrap_worker_thread(qtbot, tmp_path):
+    """FFmpegBootstrapWorker가 백그라운드 스레드에서 블로킹 없이 부트스트랩을 완수하는지 검증."""
+    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
+
+    fake_installed = tmp_path / "bin" / DEFAULT_FFMPEG_BINARY_NAME
+    fake_installed.parent.mkdir()
+    fake_installed.write_text("fake_ffmpeg", encoding="utf-8")
+
+    worker = FFmpegBootstrapWorker(
+        target_dir=str(fake_installed.parent), download_url="http://dummy.url"
+    )
+
+    bootstrap_results: list[tuple[bool, str]] = []
+    worker.finished_bootstrap.connect(
+        lambda ok, path: bootstrap_results.append((ok, path))
+    )
+
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
+        return_value=(True, fake_installed),
+    ):
+        with qtbot.waitSignal(worker.finished_bootstrap, timeout=3000):
+            worker.start()
+
+    assert len(bootstrap_results) == 1
+    assert bootstrap_results[0][0] is True
+    assert bootstrap_results[0][1] == str(fake_installed)
+
+
+def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(monkeypatch, tmp_path):
+    """설치 폴더 생성 시 권한 오류(OSError) 발생 시 tempfile 폴백 검증."""
+    from chzzk_downloader.core.ffmpeg_manager import get_default_ffmpeg_install_dir
+
+    def raise_oserror(*args, **kwargs):
+        raise PermissionError("Access denied")
+
+    monkeypatch.setattr(Path, "mkdir", raise_oserror)
+    fallback = get_default_ffmpeg_install_dir()
+    assert fallback is not None
+    assert "chzzk_downloader" in str(fallback) or str(fallback) in str(tmp_path)
+
+
+def test_download_ffmpeg_binary_mkdir_permission_error():
+    """download_ffmpeg_binary에서 디렉터리 생성 실패 시 크래시 없이 None 반환 검증."""
+    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
+
+    with patch.object(Path, "mkdir", side_effect=PermissionError("Permission denied")):
+        res = download_ffmpeg_binary(target_dir="/nonexistent/forbidden/path")
+        assert res is None
+
+
+def test_verify_media_file_integrity_ffprobe_missing_with_valid_magic_bytes(tmp_path):
+    """FFprobe 부재 환경에서 매직 바이트가 유효한 미디어 파일은 통과하고 가짜 텍스트 파일은 차단되는지 검증."""
+    # 1. 가짜 텍스트 파일
+    fake_txt = tmp_path / "fake.mp4"
+    fake_txt.write_text("just text", encoding="utf-8")
+
+    # 2. 유효한 MP4 헤더 파일
+    valid_mp4 = tmp_path / "real.mp4"
+    valid_mp4.write_bytes(
+        b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + b"\x00" * 64
+    )
+
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffprobe_available", return_value=False
+    ):
+        with patch(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffprobe_path", return_value=None
+        ):
+            # 텍스트 파일은 FFprobe 없어도 차단
+            ok_txt, msg_txt = verify_media_file_integrity(fake_txt)
+            assert ok_txt is False
+            assert "컨테이너 헤더 검증 실패" in msg_txt
+
+            # 매직 넘버가 유효한 파일은 FFprobe 부재 시 크기 및 매직 넘버 확인으로 통과
+            ok_mp4, msg_mp4 = verify_media_file_integrity(valid_mp4)
+            assert ok_mp4 is True
+            assert "헤더 매직 넘버" in msg_mp4
+
+
+def test_task_card_save_dir_mkdir_oserror(qtbot, tmp_path):
+    """다운로드 시작 시 저장 경로 생성 실패(권한 부족) 시 다운로드가 차단되고 에러 시그널이 방출되는지 검증."""
+    mock_vod = VodInfo(
+        video_no="12345", video_title="테스트 영상", channel_name="스트리머"
+    )
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/12345",
+        status=TaskStatus.READY,
+        vod_info=mock_vod,
+    )
+    qtbot.addWidget(card)
+
+    blocked_reasons: list[str] = []
+    card.download_blocked.connect(blocked_reasons.append)
+
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
+    ):
+        with patch.object(
+            Path, "mkdir", side_effect=PermissionError("폴더 생성 권한 없음")
+        ):
+            started = card.trigger_start_download()
+            assert started is False
+            assert card.status == TaskStatus.READY
+            assert len(blocked_reasons) == 1
+            assert "저장 폴더를 생성할 수 없습니다" in blocked_reasons[0]

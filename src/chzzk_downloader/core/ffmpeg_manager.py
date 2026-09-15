@@ -119,15 +119,33 @@ def get_candidate_ffmpeg_paths() -> list[Path]:
     return candidates
 
 
-def resolve_ffmpeg_path(custom_path: Path | str | None = None) -> Path | None:
-    """지정된 경로 또는 후보 경로 목록에서 실제로 존재하는 첫 번째 바이너리 경로를 반환합니다."""
+def resolve_ffmpeg_path(
+    custom_path: Path | str | None = None,
+    verify_executable: bool = False,
+) -> Path | None:
+    """지정된 경로 또는 후보 경로 목록에서 실제로 존재하는 바이너리 경로를 반환합니다.
+
+    Args:
+        custom_path: 사용자 지정 바이너리 경로
+        verify_executable: True일 경우 실제 실행 가능 여부(-version 성공)까지 확인하여
+                           손상된 바이너리는 건너뛰고 다음 우선순위 후보를 탐색합니다.
+    """
     if custom_path:
         try:
             p = Path(custom_path).resolve()
             if p.is_file():
+                if verify_executable:
+                    res = probe_ffmpeg(p)
+                    return p if res.status == FFmpegStatus.AVAILABLE else None
                 return p
         except Exception:
             return None
+        return None
+
+    if verify_executable:
+        res = probe_ffmpeg(None)
+        if res.status == FFmpegStatus.AVAILABLE and res.path:
+            return res.path
         return None
 
     for cand in get_candidate_ffmpeg_paths():
@@ -161,16 +179,39 @@ def probe_ffmpeg(
                 path=target_path,
                 error_message=f"파일이 존재하지 않습니다: {target_path}",
             )
-    else:
-        resolved = resolve_ffmpeg_path()
-        if not resolved:
-            return FFmpegProbeResult(
-                status=FFmpegStatus.NOT_FOUND,
-                path=None,
-                error_message="시스템 PATH 또는 번들 디렉터리에서 FFmpeg 바이너리를 찾을 수 없습니다.",
-            )
-        target_path = resolved
+        return _probe_single_ffmpeg_binary(target_path, timeout=timeout)
 
+    # path가 None인 경우: 후보 경로들을 순서대로 탐색하며 실제 정상 실행 가능한 바이너리를 검색
+    candidates = get_candidate_ffmpeg_paths()
+    last_failure: FFmpegProbeResult | None = None
+    for cand in candidates:
+        try:
+            resolved = cand.resolve()
+            if not resolved.is_file():
+                continue
+        except Exception:
+            continue
+
+        result = _probe_single_ffmpeg_binary(resolved, timeout=timeout)
+        if result.status == FFmpegStatus.AVAILABLE:
+            return result
+        last_failure = result
+
+    if last_failure:
+        return last_failure
+
+    return FFmpegProbeResult(
+        status=FFmpegStatus.NOT_FOUND,
+        path=None,
+        error_message="시스템 PATH 또는 번들 디렉터리에서 FFmpeg 바이너리를 찾을 수 없습니다.",
+    )
+
+
+def _probe_single_ffmpeg_binary(
+    target_path: Path,
+    timeout: float = FFMPEG_PROBE_TIMEOUT_SEC,
+) -> FFmpegProbeResult:
+    """단일 FFmpeg 바이너리 파일의 실행 가능 여부 및 호환성을 검증합니다."""
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
     # 1. 버전 파싱 및 기본 실행 테스트
@@ -255,8 +296,18 @@ def probe_ffmpeg(
 def get_default_ffmpeg_install_dir() -> Path:
     """자동 다운로드된 FFmpeg 바이너리를 저장할 기본 디렉터리를 반환합니다."""
     install_dir = Path.home() / ".chzzk_downloader" / "bin"
-    install_dir.mkdir(parents=True, exist_ok=True)
-    return install_dir
+    try:
+        install_dir.mkdir(parents=True, exist_ok=True)
+        return install_dir
+    except OSError:
+        import tempfile
+
+        fallback_dir = Path(tempfile.gettempdir()) / "chzzk_downloader" / "bin"
+        try:
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            return fallback_dir
+        except OSError:
+            return Path(tempfile.gettempdir())
 
 
 def download_ffmpeg_binary(
@@ -266,8 +317,12 @@ def download_ffmpeg_binary(
 ) -> Path | None:
     """6단계: 원격에서 FFmpeg 바이너리를 다운로드하여 로컬에 설치하고 유효성을 검증합니다."""
     global _cached_probe_result
-    dest_dir = Path(target_dir) if target_dir else get_default_ffmpeg_install_dir()
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        dest_dir = Path(target_dir) if target_dir else get_default_ffmpeg_install_dir()
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
     url = download_url or DEFAULT_FFMPEG_DOWNLOAD_URL
 
     req = urllib.request.Request(
@@ -287,8 +342,8 @@ def download_ffmpeg_binary(
     target_bin = dest_dir / DEFAULT_FFMPEG_BINARY_NAME
 
     # ZIP 아카이브인지 직접 바이너리인지 판별
-    if data.startswith(b"PK\x03\x04"):
-        try:
+    try:
+        if data.startswith(b"PK\x03\x04"):
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 for member in zf.namelist():
                     norm_name = Path(member).name.lower()
@@ -305,13 +360,12 @@ def download_ffmpeg_binary(
                             open(target_ffprobe, "wb") as target,
                         ):
                             shutil.copyfileobj(source, target)
-        except Exception:
-            return None
-    else:
-        try:
+        else:
             target_bin.write_bytes(data)
-        except Exception:
-            return None
+    except OSError:
+        return None
+    except Exception:
+        return None
 
     if not target_bin.exists():
         return None
@@ -340,12 +394,10 @@ def ensure_ffmpeg_available(
     Returns:
         (가용 여부: bool, 가용한 바이너리 경로: Path | None)
     """
-    # 1~5단계 탐색
-    resolved = resolve_ffmpeg_path()
-    if resolved:
-        probe_res = probe_ffmpeg(resolved)
-        if probe_res.status == FFmpegStatus.AVAILABLE:
-            return True, resolved
+    # 1~5단계 탐색: 후보 경로들 중 실제 정상 작동하는 바이너리 확인
+    probe_res = probe_ffmpeg(None)
+    if probe_res.status == FFmpegStatus.AVAILABLE and probe_res.path:
+        return True, probe_res.path
 
     # 1~5단계 실패 시 6단계 자동 다운로드 시도
     if auto_download:
@@ -481,15 +533,33 @@ def get_candidate_ffprobe_paths() -> list[Path]:
     return candidates
 
 
-def resolve_ffprobe_path(custom_path: Path | str | None = None) -> Path | None:
-    """지정된 경로 또는 후보 경로 목록에서 실제로 존재하는 첫 번째 FFprobe 바이너리 경로를 반환합니다."""
+def resolve_ffprobe_path(
+    custom_path: Path | str | None = None,
+    verify_executable: bool = False,
+) -> Path | None:
+    """지정된 경로 또는 후보 경로 목록에서 실제로 존재하는 FFprobe 바이너리 경로를 반환합니다.
+
+    Args:
+        custom_path: 사용자 지정 FFprobe 바이너리 경로
+        verify_executable: True일 경우 실제 실행 가능 여부(-version 성공)까지 확인하여
+                           손상된 바이너리는 건너뛰고 다음 우선순위 후보를 탐색합니다.
+    """
     if custom_path:
         try:
             p = Path(custom_path).resolve()
             if p.is_file():
+                if verify_executable:
+                    res = probe_ffprobe(p)
+                    return p if res.status == FFmpegStatus.AVAILABLE else None
                 return p
         except Exception:
             return None
+        return None
+
+    if verify_executable:
+        res = probe_ffprobe(None)
+        if res.status == FFmpegStatus.AVAILABLE and res.path:
+            return res.path
         return None
 
     for cand in get_candidate_ffprobe_paths():
@@ -523,16 +593,38 @@ def probe_ffprobe(
                 path=target_path,
                 error_message=f"파일이 존재하지 않습니다: {target_path}",
             )
-    else:
-        resolved = resolve_ffprobe_path()
-        if not resolved:
-            return FFmpegProbeResult(
-                status=FFmpegStatus.NOT_FOUND,
-                path=None,
-                error_message="시스템 PATH 또는 번들 디렉터리에서 FFprobe 바이너리를 찾을 수 없습니다.",
-            )
-        target_path = resolved
+        return _probe_single_ffprobe_binary(target_path, timeout=timeout)
 
+    candidates = get_candidate_ffprobe_paths()
+    last_failure: FFmpegProbeResult | None = None
+    for cand in candidates:
+        try:
+            resolved = cand.resolve()
+            if not resolved.is_file():
+                continue
+        except Exception:
+            continue
+
+        result = _probe_single_ffprobe_binary(resolved, timeout=timeout)
+        if result.status == FFmpegStatus.AVAILABLE:
+            return result
+        last_failure = result
+
+    if last_failure:
+        return last_failure
+
+    return FFmpegProbeResult(
+        status=FFmpegStatus.NOT_FOUND,
+        path=None,
+        error_message="시스템 PATH 또는 번들 디렉터리에서 FFprobe 바이너리를 찾을 수 없습니다.",
+    )
+
+
+def _probe_single_ffprobe_binary(
+    target_path: Path,
+    timeout: float = FFMPEG_PROBE_TIMEOUT_SEC,
+) -> FFmpegProbeResult:
+    """단일 FFprobe 바이너리 파일의 실행 가능 여부 및 버전을 검증합니다."""
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
     try:
@@ -653,11 +745,63 @@ def probe_media_file(
         return None
 
 
+def check_media_container_magic_bytes(file_path: Path | str) -> tuple[bool, str]:
+    """주요 미디어 컨테이너 포맷(MP4/TS/MKV/FLV/AVI)의 매직 넘버(시그니처)를 검증합니다.
+
+    비디오 파일로 위장한 비어있지 않은 텍스트 파일이나 기타 손상된 바이너리를 1차 차단합니다.
+    """
+    path_obj = Path(file_path).resolve()
+    if not path_obj.exists() or not path_obj.is_file():
+        return False, f"파일이 존재하지 않거나 일반 파일이 아닙니다: {path_obj.name}"
+
+    try:
+        with open(path_obj, "rb") as f:
+            header = f.read(512)
+    except OSError as e:
+        return False, f"파일 헤더 읽기 실패: {e}"
+
+    if len(header) < 4:
+        return False, "파일 헤더 크기가 너무 작습니다."
+
+    # 1. MP4 / M4V / MOV (ISO Base Media File Format): 4번째 바이트부터 'ftyp' 박스 시그니처
+    if len(header) >= 8 and header[4:8] == b"ftyp":
+        return True, "MP4 (ISO BMFF)"
+
+    # 2. MPEG-TS: 첫 바이트가 0x47 (sync byte)이며, 188바이트 간격으로 0x47 출현
+    if header[0] == 0x47:
+        if len(header) < 189 or header[188] == 0x47:
+            return True, "MPEG-TS"
+
+    # 3. Matroska / WebM: EBML Header (0x1A 0x45 0xDF 0xA3)
+    if header.startswith(b"\x1a\x45\xdf\xa3"):
+        return True, "Matroska/WebM"
+
+    # 4. FLV: 'FLV' 시그니처
+    if header.startswith(b"FLV"):
+        return True, "FLV"
+
+    # 5. AVI / RIFF: 'RIFF....AVI '
+    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"AVI ":
+        return True, "AVI"
+
+    return False, "유효한 미디어 컨테이너(MP4/TS/MKV) 헤더가 아닙니다."
+
+
 def verify_media_file_integrity(
     file_path: Path | str,
+    min_duration: float = 0.1,
+    expected_duration: float | None = None,
+    duration_tolerance: float = 5.0,
     timeout: float = 10.0,
 ) -> tuple[bool, str]:
-    """미디어 파일의 존재 유무, 용량, 스트림 유효성 및 무결성을 진단합니다.
+    """미디어 파일의 존재 유무, 용량, 컨테이너 헤더, 스트림 유효성 및 재생 시간을 진단합니다.
+
+    Args:
+        file_path: 검증할 미디어 파일 경로
+        min_duration: 최소 요구 재생 시간 (초, 기본값 0.1초)
+        expected_duration: 기대 재생 시간 (초, 설정 시 오차 범위 검증)
+        duration_tolerance: 기대 재생 시간과의 허용 오차 (초, 기본값 5.0초)
+        timeout: FFprobe 실행 타임아웃 (초)
 
     Returns:
         (성공 여부: bool, 결과 메시지 또는 원인: str)
@@ -672,12 +816,18 @@ def verify_media_file_integrity(
     except OSError as e:
         return False, f"파일 상태 확인 실패: {e}"
 
+    # 1차 헤더 매직 바이트 검증 (텍스트 파일 등 가짜 파일 즉시 차단)
+    is_valid_magic, magic_desc = check_media_container_magic_bytes(path_obj)
+    if not is_valid_magic:
+        return False, f"컨테이너 헤더 검증 실패: {magic_desc}"
+
+    # 2차 FFprobe 상세 프로빙
     info = probe_media_file(path_obj, timeout=timeout)
     if info is None:
         if not is_ffprobe_available():
             return (
                 True,
-                "FFprobe가 없어 정밀 스트림 검증을 건너뛰었습니다 (파일 크기 정상).",
+                f"FFprobe 부재로 헤더 매직 넘버({magic_desc}) 검증만 완료되었습니다.",
             )
         return (
             False,
@@ -694,11 +844,38 @@ def verify_media_file_integrity(
     if not has_video and not has_audio:
         return False, "스트림에 비디오 또는 오디오 트랙이 포함되어 있지 않습니다."
 
+    # 3차 재생 시간(duration) 무결성 검증
+    format_info = info.get("format", {})
+    raw_duration = format_info.get("duration")
+    if raw_duration is None:
+        for s in streams:
+            if s.get("duration") is not None:
+                raw_duration = s.get("duration")
+                break
+
+    if raw_duration is None:
+        return False, "미디어 파일에서 재생 시간(duration) 정보를 파싱할 수 없습니다."
+
+    try:
+        duration = float(raw_duration)
+    except (ValueError, TypeError):
+        return False, f"유효하지 않은 재생 시간 형식입니다: {raw_duration}"
+
+    if duration <= 0 or duration < min_duration:
+        return (
+            False,
+            f"재생 시간이 비정상적입니다 ({duration:.2f}초, 최소 {min_duration}초 필요).",
+        )
+
+    if expected_duration is not None and expected_duration > 0:
+        diff = abs(duration - expected_duration)
+        if diff > duration_tolerance:
+            return (
+                False,
+                f"기대 재생 시간({expected_duration:.1f}초)과 실제 재생 시간({duration:.1f}초)의 오차({diff:.1f}초)가 허용치({duration_tolerance}초)를 초과합니다.",
+            )
+
     return (
         True,
-        f"검증 완료 (스트림 {len(streams)}개: 비디오={has_video}, 오디오={has_audio})",
-    )
-    return (
-        True,
-        f"검증 완료 (스트림 {len(streams)}개: 비디오={has_video}, 오디오={has_audio})",
+        f"검증 완료 (포맷={magic_desc}, 재생시간={duration:.1f}초, 스트림 {len(streams)}개: 비디오={has_video}, 오디오={has_audio})",
     )

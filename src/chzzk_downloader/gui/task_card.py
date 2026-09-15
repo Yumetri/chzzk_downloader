@@ -578,7 +578,7 @@ class TaskCardWidget(QFrame):
 
         from chzzk_downloader.core.ffmpeg_manager import is_ffmpeg_available
 
-        if not is_ffmpeg_available(auto_download=True):
+        if not is_ffmpeg_available(auto_download=False):
             self.download_blocked.emit(
                 "FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요."
             )
@@ -588,8 +588,9 @@ class TaskCardWidget(QFrame):
         save_dir = self.custom_download_dir or settings.download_dir
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        except OSError as e:
+            self.download_blocked.emit(f"저장 폴더를 생성할 수 없습니다: {e}")
+            return False
 
         ext = (
             self.ext_combo.currentText()

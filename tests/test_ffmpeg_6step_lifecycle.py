@@ -61,6 +61,11 @@ def clean_env(tmp_path, monkeypatch):
     # 4. PATH 탐색(shutil.which) 기본 None 반환 격리
     monkeypatch.setattr("shutil.which", lambda cmd: None)
 
+    # 5. 사용자 홈 디렉터리(~/.chzzk_downloader/bin) 격리
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
     yield tmp_path
 
     set_custom_settings_path(None)

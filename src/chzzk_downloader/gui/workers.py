@@ -52,3 +52,38 @@ class CookieVerifyWorker(QThread):
 
         status, msg = verify_cookie_session(timeout=self.timeout)
         self.finished_verification.emit(status, msg)
+
+
+class FFmpegBootstrapWorker(QThread):
+    """FFmpeg 가용성 검증 및 백그라운드 자동 다운로드를 수행하는 비동기 작업자 (T0110)."""
+
+    finished_bootstrap = pyqtSignal(bool, str)
+
+    def __init__(
+        self,
+        target_dir: str | None = None,
+        download_url: str | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.target_dir = target_dir
+        self.download_url = download_url
+
+    def run(self) -> None:
+        """백그라운드 스레드에서 FFmpeg 1~6단계 생명주기 및 온디맨드 다운로드를 수행합니다."""
+        from chzzk_downloader.core.ffmpeg_manager import ensure_ffmpeg_available
+
+        try:
+            ok, path = ensure_ffmpeg_available(
+                auto_download=True,
+                target_dir=self.target_dir,
+                download_url=self.download_url,
+            )
+            if ok and path:
+                self.finished_bootstrap.emit(True, str(path))
+            else:
+                self.finished_bootstrap.emit(
+                    False, "FFmpeg 바이너리를 준비하지 못했습니다."
+                )
+        except Exception as e:
+            self.finished_bootstrap.emit(False, f"FFmpeg 준비 중 예외 발생: {e}")
