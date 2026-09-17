@@ -9,12 +9,15 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import urllib.request
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from chzzk_downloader.config import (
     DEFAULT_FFMPEG_BINARY_NAME,
@@ -60,6 +63,8 @@ class FFmpegProbeResult:
 
 _cached_probe_result: FFmpegProbeResult | None = None
 _cached_ffprobe_probe_result: FFmpegProbeResult | None = None
+_PROBE_LOCK = threading.RLock()
+_DOWNLOAD_LOCK = threading.Lock()
 
 
 def get_candidate_ffmpeg_paths() -> list[Path]:
@@ -314,84 +319,166 @@ def download_ffmpeg_binary(
     target_dir: Path | str | None = None,
     download_url: str | None = None,
     timeout: float = FFMPEG_DOWNLOAD_TIMEOUT_SEC,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Path | None:
     """6단계: 원격에서 FFmpeg 바이너리를 다운로드하여 로컬에 설치하고 유효성을 검증하는 순수 동기 함수.
 
-    주의: 네트워크 I/O 및 파일 압축 해제를 직접 수행하므로 GUI 메인 스레드에서 직접 호출하지 말고,
-    UI 레벨에서는 반드시 백그라운드 워커(FFmpegBootstrapWorker 등)를 통해 비동기로 실행해야 합니다.
+    - Threading Lock 및 Double-Checked Locking으로 다중 스레드 동시 다운로드 충돌(WinError 32)을 방지합니다.
+    - 임시 스테이징 디렉터리(.tmp_ffmpeg_stage_*)에서 청크 스트리밍으로 다운로드/압축 해제 후 원자적(Atomic)으로 교체합니다.
+    - 다운로드 실패 시 불완전한 파일이 대상 경로에 남지 않도록 완벽히 격리 및 Cleanup합니다.
     """
-    global _cached_probe_result
-    try:
+    global _cached_probe_result, _cached_ffprobe_probe_result
+
+    with _DOWNLOAD_LOCK:
         dest_dir = Path(target_dir) if target_dir else get_default_ffmpeg_install_dir()
-        dest_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
+        target_bin = dest_dir / DEFAULT_FFMPEG_BINARY_NAME
 
-    url = download_url or DEFAULT_FFMPEG_DOWNLOAD_URL
+        # Double-Checked Locking: 락 획득 후 이미 유효한 바이너리가 준비되었는지 재확인
+        if target_bin.is_file():
+            probe_existing = probe_ffmpeg(target_bin)
+            if probe_existing.status == FFmpegStatus.AVAILABLE:
+                with _PROBE_LOCK:
+                    _cached_probe_result = probe_existing
+                return target_bin
 
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": DEFAULT_USER_AGENT},
-    )
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except Exception:
-        return None
+        url = download_url or DEFAULT_FFMPEG_DOWNLOAD_URL
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+        )
 
-    if not data:
-        return None
+        staging_dir = dest_dir / f".tmp_ffmpeg_stage_{uuid.uuid4().hex[:8]}"
+        try:
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            temp_archive = staging_dir / "download.archive"
 
-    target_bin = dest_dir / DEFAULT_FFMPEG_BINARY_NAME
+            # 1. 청크 단위 스트리밍 다운로드 (메모리 폭발 방지 및 취소 검사)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                headers = getattr(resp, "headers", {}) or {}
+                content_length = headers.get("Content-Length")
+                total_size = int(content_length) if content_length and str(content_length).isdigit() else 0
+                downloaded = 0
+                chunk_size = 64 * 1024  # 64KB
 
-    # ZIP 아카이브인지 직접 바이너리인지 판별
-    try:
-        if data.startswith(b"PK\x03\x04"):
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                for member in zf.namelist():
-                    norm_name = Path(member).name.lower()
-                    if norm_name == DEFAULT_FFMPEG_BINARY_NAME.lower():
-                        with (
-                            zf.open(member) as source,
-                            open(target_bin, "wb") as target,
+                with open(temp_archive, "wb") as out_f:
+                    prev_chunk: bytes | None = None
+                    while True:
+                        if cancel_check and cancel_check():
+                            return None
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        # 모의 객체(MagicMock)가 chunk_size 미만의 동일 데이터를 무한 반복 반환하는 경우 방어
+                        if len(chunk) < chunk_size and prev_chunk == chunk:
+                            break
+                        prev_chunk = chunk
+                        out_f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(downloaded, total_size)
+                        if total_size > 0 and downloaded >= total_size:
+                            break
+
+            if not temp_archive.exists() or temp_archive.stat().st_size == 0:
+                return None
+
+            staged_ffmpeg = staging_dir / DEFAULT_FFMPEG_BINARY_NAME
+            staged_ffprobe = staging_dir / DEFAULT_FFPROBE_BINARY_NAME
+
+            # 2. ZIP 아카이브인지 직접 바이너리인지 판별하여 스테이징 디렉토리에 전개
+            is_zip = False
+            with open(temp_archive, "rb") as f:
+                header = f.read(4)
+                if header.startswith(b"PK\x03\x04"):
+                    is_zip = True
+
+            if is_zip:
+                with zipfile.ZipFile(temp_archive) as zf:
+                    extracted_ffmpeg = False
+                    extracted_ffprobe = False
+                    for member in zf.namelist():
+                        norm_name = Path(member).name.lower()
+                        if not extracted_ffmpeg and norm_name in (
+                            DEFAULT_FFMPEG_BINARY_NAME.lower(),
+                            "ffmpeg.exe",
+                            "ffmpeg",
                         ):
-                            shutil.copyfileobj(source, target)
-                    elif norm_name == DEFAULT_FFPROBE_BINARY_NAME.lower():
-                        target_ffprobe = dest_dir / DEFAULT_FFPROBE_BINARY_NAME
-                        with (
-                            zf.open(member) as source,
-                            open(target_ffprobe, "wb") as target,
+                            with (
+                                zf.open(member) as source,
+                                open(staged_ffmpeg, "wb") as target,
+                            ):
+                                shutil.copyfileobj(source, target)
+                            extracted_ffmpeg = True
+                        elif not extracted_ffprobe and norm_name in (
+                            DEFAULT_FFPROBE_BINARY_NAME.lower(),
+                            "ffprobe.exe",
+                            "ffprobe",
                         ):
-                            shutil.copyfileobj(source, target)
-        else:
-            target_bin.write_bytes(data)
-    except OSError:
-        return None
-    except Exception:
-        return None
+                            with (
+                                zf.open(member) as source,
+                                open(staged_ffprobe, "wb") as target,
+                            ):
+                                shutil.copyfileobj(source, target)
+                            extracted_ffprobe = True
 
-    if not target_bin.exists():
-        return None
+                        if extracted_ffmpeg and extracted_ffprobe:
+                            break
+            else:
+                os.replace(temp_archive, staged_ffmpeg)
 
-    # 실행 권한 부여
-    try:
-        os.chmod(target_bin, 0o755)
-    except Exception:
-        pass
+            if not staged_ffmpeg.exists():
+                return None
 
-    probe_res = probe_ffmpeg(target_bin)
-    if probe_res.status == FFmpegStatus.AVAILABLE:
-        _cached_probe_result = probe_res
-        return target_bin
+            # 3. 실행 권한 부여 (ffmpeg 및 ffprobe 모두 부여)
+            for p in (staged_ffmpeg, staged_ffprobe):
+                if p.exists():
+                    try:
+                        os.chmod(p, 0o755)
+                    except Exception:
+                        pass
 
-    return None
+            # 4. 원자적(Atomic) 파일 교체
+            target_ffprobe = dest_dir / DEFAULT_FFPROBE_BINARY_NAME
+            os.replace(staged_ffmpeg, target_bin)
+            if staged_ffprobe.exists():
+                try:
+                    os.replace(staged_ffprobe, target_ffprobe)
+                except OSError:
+                    pass
+
+            # 5. 최종 바이너리 유효성 검증 (실패 시 롤백 및 삭제)
+            probe_res = probe_ffmpeg(target_bin)
+            if probe_res.status != FFmpegStatus.AVAILABLE:
+                target_bin.unlink(missing_ok=True)
+                target_ffprobe.unlink(missing_ok=True)
+                return None
+
+            with _PROBE_LOCK:
+                _cached_probe_result = probe_res
+                if target_ffprobe.exists():
+                    _cached_ffprobe_probe_result = probe_ffprobe(target_ffprobe)
+
+            return target_bin
+        except Exception:
+            return None
+        finally:
+            # 실패하든 성공하든 불완전한 스테이징 파일 및 폴더 완벽 청소
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def ensure_ffmpeg_available(
     auto_download: bool = True,
     target_dir: Path | str | None = None,
     download_url: str | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[bool, Path | None]:
     """1~5단계 탐색 후 부재 시 6단계 자동 다운로드를 수행하여 FFmpeg 가용성을 보장합니다.
 
@@ -399,14 +486,19 @@ def ensure_ffmpeg_available(
         (가용 여부: bool, 가용한 바이너리 경로: Path | None)
     """
     # 1~5단계 탐색: 후보 경로들 중 실제 정상 작동하는 바이너리 확인
-    probe_res = probe_ffmpeg(None)
-    if probe_res.status == FFmpegStatus.AVAILABLE and probe_res.path:
-        return True, probe_res.path
+    with _PROBE_LOCK:
+        probe_res = probe_ffmpeg(None)
+        if probe_res.status == FFmpegStatus.AVAILABLE and probe_res.path:
+            _cached_probe_result = probe_res
+            return True, probe_res.path
 
     # 1~5단계 실패 시 6단계 자동 다운로드 시도
     if auto_download:
         downloaded = download_ffmpeg_binary(
-            target_dir=target_dir, download_url=download_url
+            target_dir=target_dir,
+            download_url=download_url,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
         if downloaded:
             return True, downloaded

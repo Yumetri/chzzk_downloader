@@ -58,6 +58,7 @@ class FFmpegBootstrapWorker(QThread):
     """FFmpeg 가용성 검증 및 백그라운드 자동 다운로드를 수행하는 비동기 작업자 (T0110)."""
 
     finished_bootstrap = pyqtSignal(bool, str)
+    download_progress = pyqtSignal(int, int)
 
     def __init__(
         self,
@@ -68,18 +69,32 @@ class FFmpegBootstrapWorker(QThread):
         super().__init__(parent)
         self.target_dir = target_dir
         self.download_url = download_url
+        self._is_cancelled = False
+
+    def cancel(self) -> None:
+        """다운로드 작업을 안전하게 취소 요청합니다."""
+        self._is_cancelled = True
 
     def run(self) -> None:
         """백그라운드 스레드에서 FFmpeg 1~6단계 생명주기 및 온디맨드 다운로드를 수행합니다."""
         from chzzk_downloader.core.ffmpeg_manager import ensure_ffmpeg_available
 
         try:
+            if self._is_cancelled:
+                self.finished_bootstrap.emit(False, "다운로드가 취소되었습니다.")
+                return
+
             ok, path = ensure_ffmpeg_available(
                 auto_download=True,
                 target_dir=self.target_dir,
                 download_url=self.download_url,
+                progress_callback=lambda cur, tot: self.download_progress.emit(cur, tot),
+                cancel_check=lambda: self._is_cancelled,
             )
-            if ok and path:
+
+            if self._is_cancelled:
+                self.finished_bootstrap.emit(False, "다운로드가 취소되었습니다.")
+            elif ok and path:
                 self.finished_bootstrap.emit(True, str(path))
             else:
                 self.finished_bootstrap.emit(

@@ -638,7 +638,7 @@ def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot, tmp_path):
 
     def mock_run(cmd, *args, **kwargs):
         cmd_str = [str(c) for c in cmd]
-        if str(target_bin) in cmd_str[0] or cmd_str[0] == str(target_bin):
+        if str(tmp_path) in cmd_str[0]:
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=0,
@@ -697,7 +697,7 @@ def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
 
     def mock_run(cmd, *args, **kwargs):
         cmd_str = [str(c) for c in cmd]
-        if str(target_bin) in cmd_str[0] or cmd_str[0] == str(target_bin):
+        if str(tmp_path) in cmd_str[0]:
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=0,
@@ -716,6 +716,7 @@ def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
         with patch("subprocess.run", side_effect=mock_run):
             with qtbot.waitSignal(worker.finished_bootstrap, timeout=3000):
                 worker.start()
+            assert worker.wait(3000)
 
     # 3. 워커가 백그라운드에서 다운로드하는 동안에도 메인 UI 스레드는 멈추지 않고 타이머 틱(이벤트)을 지속 처리함
     assert len(timer_ticks) >= 5
@@ -787,6 +788,161 @@ def test_ui_download_trigger_returns_immediately(qtbot, tmp_path):
 
         with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
             pass
+        assert worker.wait(3000)
+
+
+def test_concurrent_ffmpeg_downloads_no_race_collision(tmp_path):
+    """[동시성 검증] 다중 스레드가 동시에 download_ffmpeg_binary를 호출해도 락과 더블체크로 충돌(WinError 32) 없이 안전하게 완료됨을 검증."""
+    import concurrent.futures
+    import io
+    import zipfile
+    from unittest.mock import MagicMock
+    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
+
+    clear_probe_cache()
+    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"concurrent_test_payload")
+    zip_data = zip_buffer.getvalue()
+
+    download_count = 0
+
+    def mock_urlopen(req, *args, **kwargs):
+        nonlocal download_count
+        download_count += 1
+        time.sleep(0.05)
+        resp = MagicMock()
+        resp.read.side_effect = [zip_data, b""]
+        resp.headers = {"Content-Length": str(len(zip_data))}
+        resp.__enter__.return_value = resp
+        return resp
+
+    def mock_run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="ffmpeg version 6.0-essentials_build Copyright\n",
+            stderr="",
+        )
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        with patch("subprocess.run", side_effect=mock_run):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [
+                    executor.submit(download_ffmpeg_binary, target_dir=tmp_path)
+                    for _ in range(5)
+                ]
+                results = [f.result() for f in futures]
+
+    # 모든 스레드가 정상적인 바이너리 경로를 반환받음
+    for res in results:
+        assert res == target_bin
+    assert target_bin.exists()
+    # 더블체크 락에 의해 실제 원격 다운로드는 1회만 수행됨!
+    assert download_count == 1
+
+
+def test_interrupted_download_leaves_no_corrupt_files(tmp_path):
+    """[원자성 검증] 압축 해제 및 파일 쓰기 도중 예외 발생 시 목적지 경로에 깨진 바이너리가 남지 않고 완벽히 격리됨을 검증."""
+    import io
+    import zipfile
+    from unittest.mock import MagicMock
+    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
+
+    clear_probe_cache()
+    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"valid_zip_content")
+    zip_data = zip_buffer.getvalue()
+
+    resp = MagicMock()
+    resp.read.return_value = zip_data
+    resp.headers = {"Content-Length": str(len(zip_data))}
+    resp.__enter__.return_value = resp
+
+    def failing_copy(src, dst):
+        dst.write(b"corrupted_partial_data")
+        raise OSError("디스크 공간 부족 또는 네트워크 끊김")
+
+    with patch("urllib.request.urlopen", return_value=resp):
+        with patch("shutil.copyfileobj", side_effect=failing_copy):
+            res = download_ffmpeg_binary(target_dir=tmp_path)
+            assert res is None
+
+    # [핵심 검증]: 쓰기 도중 실패 시 목적지 경로에 손상된 파일이 절대 남지 않아야 함!
+    assert not target_bin.exists(), "치명적 결함: 쓰기 실패 후에도 목적지 경로에 깨진 바이너리가 잔존합니다!"
+
+
+def test_ffmpeg_bootstrap_worker_cancellation(qtbot, tmp_path):
+    """[취소 검증] FFmpegBootstrapWorker 실행 중 cancel() 호출 시 안전하게 중단되고 finished_bootstrap(False)을 방출하는지 검증."""
+    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
+
+    worker = FFmpegBootstrapWorker(target_dir=str(tmp_path))
+    results = []
+    worker.finished_bootstrap.connect(lambda ok, msg: results.append((ok, msg)))
+
+    def blocking_download(*args, **kwargs):
+        cancel_check = kwargs.get("cancel_check")
+        for _ in range(10):
+            time.sleep(0.05)
+            if cancel_check and cancel_check():
+                return None
+        return None
+
+    with patch("chzzk_downloader.core.ffmpeg_manager.download_ffmpeg_binary", side_effect=blocking_download):
+        with patch("chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg", return_value=FFmpegProbeResult(status=FFmpegStatus.NOT_FOUND, path=None)):
+            with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
+                worker.start()
+                time.sleep(0.05)
+                worker.cancel()
+            assert worker.wait(3000)
+
+    assert len(results) == 1
+    assert results[0][0] is False
+    assert "취소" in results[0][1]
+
+
+def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(tmp_path):
+    """[메모리 보호 검증] 대용량 바이너리 다운로드 시 전체를 RAM에 적재(resp.read())하지 않고 64KB 스트리밍하여 메모리 피크가 5MB 이하를 유지함을 검증."""
+    import tracemalloc
+    from unittest.mock import MagicMock
+    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
+
+    clear_probe_cache()
+    chunk_size = 64 * 1024
+    total_chunks = 480  # 약 30MB
+    large_chunk = b"A" * chunk_size
+
+    def stream_chunks():
+        for _ in range(total_chunks):
+            yield large_chunk
+        while True:
+            yield b""
+
+    gen = stream_chunks()
+
+    resp = MagicMock()
+    # read(amt)로 호출되면 64KB씩 스트리밍, read()로 인자 없이 호출되면 30MB 통째로 반환
+    resp.read.side_effect = lambda size=None: next(gen) if (size and size > 0) else (large_chunk * total_chunks)
+    resp.headers = {"Content-Length": str(chunk_size * total_chunks)}
+    resp.__enter__.return_value = resp
+
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+
+    with patch("urllib.request.urlopen", return_value=resp):
+        download_ffmpeg_binary(target_dir=tmp_path)
+
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    peak_mb = peak / (1024 * 1024)
+    # [검증]: 64KB 스트리밍 방식은 1MB 미만이어야 함. 만약 기존 전체 적재(resp.read()) 방식이면 30MB 이상 치솟아 실패!
+    assert peak_mb < 5.0, f"메모리 폭발 발생! 피크 메모리 점유: {peak_mb:.2f}MB (허용 기준: 5.0MB 미만)"
 
 
 def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(monkeypatch, tmp_path):
