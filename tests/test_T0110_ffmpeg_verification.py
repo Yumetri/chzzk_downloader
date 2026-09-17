@@ -724,26 +724,42 @@ def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
 
 def test_ui_calls_ffmpeg_download_strictly_in_background_thread(qtbot, tmp_path):
     """[스레드 격리 보장] UI 레벨에서 FFmpeg 다운로드를 수행할 때 메인 GUI 스레드가 아닌 별도 백그라운드 스레드에서만 호출됨을 보장."""
+    from PyQt6.QtCore import QThread
     from PyQt6.QtWidgets import QApplication
     from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
 
+    clear_probe_cache()
     caller_threads: list[QThread] = []
     fake_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
-    fake_bin.write_text("fake_ffmpeg", encoding="utf-8")
 
     def spy_download(*args, **kwargs):
         caller_threads.append(QThread.currentThread())
+        fake_bin.write_text("fake_ffmpeg", encoding="utf-8")
         return fake_bin
 
+    def mock_probe(path=None):
+        if path is None or not fake_bin.exists():
+            return FFmpegProbeResult(status=FFmpegStatus.NOT_FOUND, path=None)
+        return FFmpegProbeResult(
+            status=FFmpegStatus.AVAILABLE,
+            path=fake_bin,
+            version="6.0",
+            compatible_args=["-extension_picky", "0"],
+        )
+
     worker = FFmpegBootstrapWorker(target_dir=str(tmp_path))
+    results = []
+    worker.finished_bootstrap.connect(lambda ok, msg: results.append((ok, msg)))
     with patch(
         "chzzk_downloader.core.ffmpeg_manager.download_ffmpeg_binary",
         side_effect=spy_download,
     ):
-        with patch("chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg", return_value=(True, "6.0", True)):
+        with patch("chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg", side_effect=mock_probe):
             with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
                 worker.start()
 
+    assert results != []
+    assert results[0][0] is True, f"Worker failed: {results}"
     assert len(caller_threads) == 1
     # [핵심 보장]: 다운로드를 수행한 스레드는 절대 메인 GUI 스레드여서는 안 됨!
     main_thread = QApplication.instance().thread()
