@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from PyQt6.QtCore import QTimer
 
 from chzzk_downloader.config import DEFAULT_FFMPEG_BINARY_NAME
 from chzzk_downloader.core.ffmpeg_manager import (
@@ -590,6 +592,74 @@ def test_ffmpeg_bootstrap_worker_thread(qtbot, tmp_path):
     assert len(bootstrap_results) == 1
     assert bootstrap_results[0][0] is True
     assert bootstrap_results[0][1] == str(fake_installed)
+
+
+def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot):
+    """[문제 재현] 메인 GUI 스레드에서 FFmpeg 다운로드가 동기 실행되면 응답 대기 동안 UI 이벤트 루프가 완전히 정지(블로킹)됨을 재현."""
+    from chzzk_downloader.core.ffmpeg_manager import ensure_ffmpeg_available
+
+    # 1. UI 이벤트 루프의 정상 동작을 감시하는 Heartbeat 타이머 등록 (20ms 간격)
+    timer_ticks: list[float] = []
+    timer = QTimer()
+    timer.setInterval(20)
+    timer.timeout.connect(lambda: timer_ticks.append(time.time()))
+    timer.start()
+
+    # 2. 원격 네트워크 다운로드 응답 지연/미응답 시뮬레이션 (0.25초 동안 블로킹)
+    def blocking_download(*args, **kwargs):
+        time.sleep(0.25)
+        return True, Path("/fake/ffmpeg")
+
+    start_time = time.time()
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
+        side_effect=blocking_download,
+    ):
+        # 과거 방식처럼 메인 스레드에서 동기적으로 auto_download=True 실행
+        ensure_ffmpeg_available(auto_download=True)
+
+    elapsed = time.time() - start_time
+
+    # [기능 요구사항 검증]: 다운로드가 진행되는 250ms 동안에도 UI 이벤트 루프는 살아있어야 한다!
+    # 하지만 동기식 다운로드는 메인 스레드를 블로킹하므로 timer_ticks가 0이 되어 이 테스트는 실패(FAILED)합니다!
+    assert len(timer_ticks) > 0, (
+        f"UI 블로킹 발생! {elapsed:.2f}초 동안 UI 이벤트 루프가 정지되어 타이머 틱이 0개입니다."
+    )
+
+
+def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
+    """[해결 검증] 백그라운드 워커 스레드에서 다운로드 실행 시, 네트워크 응답이 지연되어도 UI 이벤트 루프가 멈추지 않고 반응함을 검증."""
+    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
+
+    fake_installed = tmp_path / "bin" / DEFAULT_FFMPEG_BINARY_NAME
+    fake_installed.parent.mkdir()
+    fake_installed.write_text("fake_ffmpeg", encoding="utf-8")
+
+    # 1. UI 이벤트 루프 감시 Heartbeat 타이머 등록 (20ms 간격)
+    timer_ticks: list[float] = []
+    timer = QTimer()
+    timer.setInterval(20)
+    timer.timeout.connect(lambda: timer_ticks.append(time.time()))
+    timer.start()
+
+    # 2. 다운로드가 250ms 동안 지연되는 상황 시뮬레이션
+    def slow_download(*args, **kwargs):
+        time.sleep(0.25)
+        return True, fake_installed
+
+    worker = FFmpegBootstrapWorker(
+        target_dir=str(fake_installed.parent), download_url="http://dummy.url"
+    )
+
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
+        side_effect=slow_download,
+    ):
+        with qtbot.waitSignal(worker.finished_bootstrap, timeout=3000):
+            worker.start()
+
+    # 3. 워커가 백그라운드에서 다운로드하는 동안에도 메인 UI 스레드는 멈추지 않고 타이머 틱(이벤트)을 지속 처리함
+    assert len(timer_ticks) >= 5
 
 
 def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(monkeypatch, tmp_path):
