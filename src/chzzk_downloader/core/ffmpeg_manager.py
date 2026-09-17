@@ -310,12 +310,12 @@ def get_default_ffmpeg_install_dir() -> Path:
             return Path(tempfile.gettempdir())
 
 
-def download_ffmpeg_binary(
+def _download_ffmpeg_binary_sync(
     target_dir: Path | str | None = None,
     download_url: str | None = None,
     timeout: float = FFMPEG_DOWNLOAD_TIMEOUT_SEC,
 ) -> Path | None:
-    """6단계: 원격에서 FFmpeg 바이너리를 다운로드하여 로컬에 설치하고 유효성을 검증합니다."""
+    """원격에서 FFmpeg 바이너리를 다운로드하여 로컬에 설치하고 유효성을 검증하는 동기 코어 로직."""
     global _cached_probe_result
     try:
         dest_dir = Path(target_dir) if target_dir else get_default_ffmpeg_install_dir()
@@ -382,6 +382,44 @@ def download_ffmpeg_binary(
         return target_bin
 
     return None
+
+
+def download_ffmpeg_binary(
+    target_dir: Path | str | None = None,
+    download_url: str | None = None,
+    timeout: float = FFMPEG_DOWNLOAD_TIMEOUT_SEC,
+) -> Path | None:
+    """6단계: 원격에서 FFmpeg 바이너리를 다운로드하여 로컬에 설치하고 유효성을 검증합니다.
+
+    GUI 메인 스레드에서 직접 호출된 경우 백그라운드 스레드에서 I/O를 수행하며 Qt 이벤트 루프를
+    지속적으로 회전시켜 UI 프리징(블로킹)을 방지합니다.
+    """
+    try:
+        from PyQt6.QtCore import QThread
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        is_qt_gui_thread = bool(
+            app is not None and QThread.currentThread() == app.thread()
+        )
+    except (ImportError, Exception):
+        is_qt_gui_thread = False
+        app = None
+
+    if is_qt_gui_thread and app is not None:
+        import concurrent.futures
+        import time
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _download_ffmpeg_binary_sync, target_dir, download_url, timeout
+            )
+            while not future.done():
+                app.processEvents()
+                time.sleep(0.01)
+            return future.result()
+
+    return _download_ffmpeg_binary_sync(target_dir, download_url, timeout)
 
 
 def ensure_ffmpeg_available(

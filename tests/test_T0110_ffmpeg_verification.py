@@ -594,9 +594,14 @@ def test_ffmpeg_bootstrap_worker_thread(qtbot, tmp_path):
     assert bootstrap_results[0][1] == str(fake_installed)
 
 
-def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot):
+def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot, tmp_path):
     """[문제 재현] 메인 GUI 스레드에서 FFmpeg 다운로드가 동기 실행되면 응답 대기 동안 UI 이벤트 루프가 완전히 정지(블로킹)됨을 재현."""
+    import io
+    import zipfile
+    from unittest.mock import MagicMock
     from chzzk_downloader.core.ffmpeg_manager import ensure_ffmpeg_available
+
+    clear_probe_cache()
 
     # 1. UI 이벤트 루프의 정상 동작을 감시하는 Heartbeat 타이머 등록 (20ms 간격)
     timer_ticks: list[float] = []
@@ -605,23 +610,44 @@ def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot):
     timer.timeout.connect(lambda: timer_ticks.append(time.time()))
     timer.start()
 
-    # 2. 원격 네트워크 다운로드 응답 지연/미응답 시뮬레이션 (0.25초 동안 블로킹)
-    def blocking_download(*args, **kwargs):
+    # 2. 원격 네트워크 다운로드 응답 지연/미응답 시뮬레이션 (urlopen에서 0.25초 지연 후 유효 zip 데이터 반환)
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"downloaded_binary_payload")
+    zip_data = zip_buffer.getvalue()
+
+    def slow_urlopen(req, *args, **kwargs):
         time.sleep(0.25)
-        return True, Path("/fake/ffmpeg")
+        resp = MagicMock()
+        resp.read.return_value = zip_data
+        resp.__enter__.return_value = resp
+        return resp
+
+    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
+
+    def mock_run(cmd, *args, **kwargs):
+        cmd_str = [str(c) for c in cmd]
+        if str(target_bin) in cmd_str[0] or cmd_str[0] == str(target_bin):
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="ffmpeg version 6.0-essentials_build Copyright\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="not found"
+        )
 
     start_time = time.time()
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
-        side_effect=blocking_download,
-    ):
-        # 과거 방식처럼 메인 스레드에서 동기적으로 auto_download=True 실행
-        ensure_ffmpeg_available(auto_download=True)
+    with patch("urllib.request.urlopen", side_effect=slow_urlopen):
+        with patch("subprocess.run", side_effect=mock_run):
+            # 메인 스레드에서 동기적으로 auto_download=True 실행
+            ensure_ffmpeg_available(auto_download=True, target_dir=tmp_path)
 
     elapsed = time.time() - start_time
 
     # [기능 요구사항 검증]: 다운로드가 진행되는 250ms 동안에도 UI 이벤트 루프는 살아있어야 한다!
-    # 하지만 동기식 다운로드는 메인 스레드를 블로킹하므로 timer_ticks가 0이 되어 이 테스트는 실패(FAILED)합니다!
+    # 하지만 기존 동기식 다운로드는 메인 스레드를 블로킹하므로 timer_ticks가 0이 되어 이 테스트는 실패(FAILED)합니다!
     assert len(timer_ticks) > 0, (
         f"UI 블로킹 발생! {elapsed:.2f}초 동안 UI 이벤트 루프가 정지되어 타이머 틱이 0개입니다."
     )
@@ -629,11 +655,12 @@ def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot):
 
 def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
     """[해결 검증] 백그라운드 워커 스레드에서 다운로드 실행 시, 네트워크 응답이 지연되어도 UI 이벤트 루프가 멈추지 않고 반응함을 검증."""
+    import io
+    import zipfile
+    from unittest.mock import MagicMock
     from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
 
-    fake_installed = tmp_path / "bin" / DEFAULT_FFMPEG_BINARY_NAME
-    fake_installed.parent.mkdir()
-    fake_installed.write_text("fake_ffmpeg", encoding="utf-8")
+    clear_probe_cache()
 
     # 1. UI 이벤트 루프 감시 Heartbeat 타이머 등록 (20ms 간격)
     timer_ticks: list[float] = []
@@ -642,24 +669,46 @@ def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
     timer.timeout.connect(lambda: timer_ticks.append(time.time()))
     timer.start()
 
-    # 2. 다운로드가 250ms 동안 지연되는 상황 시뮬레이션
-    def slow_download(*args, **kwargs):
+    # 2. 동일한 원격 네트워크 지연(urlopen 0.25초) 시뮬레이션
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"downloaded_binary_payload")
+    zip_data = zip_buffer.getvalue()
+
+    def slow_urlopen(req, *args, **kwargs):
         time.sleep(0.25)
-        return True, fake_installed
+        resp = MagicMock()
+        resp.read.return_value = zip_data
+        resp.__enter__.return_value = resp
+        return resp
+
+    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
+
+    def mock_run(cmd, *args, **kwargs):
+        cmd_str = [str(c) for c in cmd]
+        if str(target_bin) in cmd_str[0] or cmd_str[0] == str(target_bin):
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="ffmpeg version 6.0-essentials_build Copyright\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="not found"
+        )
 
     worker = FFmpegBootstrapWorker(
-        target_dir=str(fake_installed.parent), download_url="http://dummy.url"
+        target_dir=str(tmp_path), download_url="http://dummy.url"
     )
 
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
-        side_effect=slow_download,
-    ):
-        with qtbot.waitSignal(worker.finished_bootstrap, timeout=3000):
-            worker.start()
+    with patch("urllib.request.urlopen", side_effect=slow_urlopen):
+        with patch("subprocess.run", side_effect=mock_run):
+            with qtbot.waitSignal(worker.finished_bootstrap, timeout=3000):
+                worker.start()
 
     # 3. 워커가 백그라운드에서 다운로드하는 동안에도 메인 UI 스레드는 멈추지 않고 타이머 틱(이벤트)을 지속 처리함
     assert len(timer_ticks) >= 5
+    assert target_bin.exists()
 
 
 def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(monkeypatch, tmp_path):
