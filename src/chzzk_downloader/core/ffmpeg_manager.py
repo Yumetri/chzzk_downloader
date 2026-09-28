@@ -2,22 +2,21 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import urllib.request
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from chzzk_downloader.config import (
     DEFAULT_FFMPEG_BINARY_NAME,
@@ -362,7 +361,11 @@ def download_ffmpeg_binary(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 headers = getattr(resp, "headers", {}) or {}
                 content_length = headers.get("Content-Length")
-                total_size = int(content_length) if content_length and str(content_length).isdigit() else 0
+                total_size = (
+                    int(content_length)
+                    if content_length and str(content_length).isdigit()
+                    else 0
+                )
                 downloaded = 0
                 chunk_size = 64 * 1024  # 64KB
 

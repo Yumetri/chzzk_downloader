@@ -88,7 +88,9 @@ class FFmpegBootstrapWorker(QThread):
                 auto_download=True,
                 target_dir=self.target_dir,
                 download_url=self.download_url,
-                progress_callback=lambda cur, tot: self.download_progress.emit(cur, tot),
+                progress_callback=lambda cur, tot: self.download_progress.emit(
+                    cur, tot
+                ),
                 cancel_check=lambda: self._is_cancelled,
             )
 

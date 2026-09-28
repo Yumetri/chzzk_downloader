@@ -597,12 +597,17 @@ def test_ffmpeg_bootstrap_worker_thread(qtbot, tmp_path):
 def test_ffmpeg_manager_has_no_qt_dependency():
     """[Core 순수성 검증] Core 계층(ffmpeg_manager.py)은 PyQt6 등 GUI 프레임워크에 일체 의존하지 않아야 함."""
     import inspect
+
     import chzzk_downloader.core.ffmpeg_manager as fm
 
     source = inspect.getsource(fm)
-    assert "PyQt6" not in source, "Core 계층(ffmpeg_manager.py)에 PyQt6 의존성이 존재합니다! 완전 분리되어야 합니다."
+    assert "PyQt6" not in source, (
+        "Core 계층(ffmpeg_manager.py)에 PyQt6 의존성이 존재합니다! 완전 분리되어야 합니다."
+    )
     assert "QApplication" not in source, "Core 계층에 QApplication 참조가 존재합니다."
-    assert "processEvents" not in source, "Core 계층에 GUI 이벤트 루프 조작(processEvents)이 존재합니다."
+    assert "processEvents" not in source, (
+        "Core 계층에 GUI 이벤트 루프 조작(processEvents)이 존재합니다."
+    )
 
 
 def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot, tmp_path):
@@ -610,6 +615,7 @@ def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot, tmp_path):
     import io
     import zipfile
     from unittest.mock import MagicMock
+
     from chzzk_downloader.core.ffmpeg_manager import ensure_ffmpeg_available
 
     clear_probe_cache()
@@ -634,8 +640,6 @@ def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot, tmp_path):
         resp.__enter__.return_value = resp
         return resp
 
-    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
-
     def mock_run(cmd, *args, **kwargs):
         cmd_str = [str(c) for c in cmd]
         if str(tmp_path) in cmd_str[0]:
@@ -649,13 +653,10 @@ def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot, tmp_path):
             args=cmd, returncode=1, stdout="", stderr="not found"
         )
 
-    start_time = time.time()
     with patch("urllib.request.urlopen", side_effect=slow_urlopen):
         with patch("subprocess.run", side_effect=mock_run):
             # 메인 스레드에서 순수 동기 다운로드 실행
             ensure_ffmpeg_available(auto_download=True, target_dir=tmp_path)
-
-    elapsed = time.time() - start_time
 
     # [검증]: 순수 동기 다운로드는 메인 스레드를 온전히 블로킹하므로 250ms 동안 타이머 틱이 발생하지 않아야 함!
     # (따라서 UI에서는 이를 직접 부르지 않고 반드시 FFmpegBootstrapWorker를 사용해야 함)
@@ -669,6 +670,7 @@ def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
     import io
     import zipfile
     from unittest.mock import MagicMock
+
     from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
 
     clear_probe_cache()
@@ -727,6 +729,7 @@ def test_ui_calls_ffmpeg_download_strictly_in_background_thread(qtbot, tmp_path)
     """[스레드 격리 보장] UI 레벨에서 FFmpeg 다운로드를 수행할 때 메인 GUI 스레드가 아닌 별도 백그라운드 스레드에서만 호출됨을 보장."""
     from PyQt6.QtCore import QThread
     from PyQt6.QtWidgets import QApplication
+
     from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
 
     clear_probe_cache()
@@ -734,7 +737,9 @@ def test_ui_calls_ffmpeg_download_strictly_in_background_thread(qtbot, tmp_path)
     fake_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
 
     def spy_download(*args, **kwargs):
-        caller_threads.append(QThread.currentThread())
+        curr = QThread.currentThread()
+        assert curr is not None
+        caller_threads.append(curr)
         fake_bin.write_text("fake_ffmpeg", encoding="utf-8")
         return fake_bin
 
@@ -755,7 +760,9 @@ def test_ui_calls_ffmpeg_download_strictly_in_background_thread(qtbot, tmp_path)
         "chzzk_downloader.core.ffmpeg_manager.download_ffmpeg_binary",
         side_effect=spy_download,
     ):
-        with patch("chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg", side_effect=mock_probe):
+        with patch(
+            "chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg", side_effect=mock_probe
+        ):
             with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
                 worker.start()
 
@@ -763,8 +770,12 @@ def test_ui_calls_ffmpeg_download_strictly_in_background_thread(qtbot, tmp_path)
     assert results[0][0] is True, f"Worker failed: {results}"
     assert len(caller_threads) == 1
     # [핵심 보장]: 다운로드를 수행한 스레드는 절대 메인 GUI 스레드여서는 안 됨!
-    main_thread = QApplication.instance().thread()
-    assert caller_threads[0] != main_thread, "치명적 오류: 다운로드가 메인 GUI 스레드에서 동기로 직접 호출되었습니다!"
+    app = QApplication.instance()
+    assert app is not None
+    main_thread = app.thread()
+    assert caller_threads[0] != main_thread, (
+        "치명적 오류: 다운로드가 메인 GUI 스레드에서 동기로 직접 호출되었습니다!"
+    )
 
 
 def test_ui_download_trigger_returns_immediately(qtbot, tmp_path):
@@ -777,7 +788,10 @@ def test_ui_download_trigger_returns_immediately(qtbot, tmp_path):
         time.sleep(0.3)
         return True, tmp_path / DEFAULT_FFMPEG_BINARY_NAME
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available", side_effect=slow_ensure):
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
+        side_effect=slow_ensure,
+    ):
         start_time = time.time()
         # 워커 시작 호출 (UI 버튼이나 초기화 시 호출되는 액션)
         worker.start()
@@ -797,6 +811,7 @@ def test_concurrent_ffmpeg_downloads_no_race_collision(tmp_path):
     import io
     import zipfile
     from unittest.mock import MagicMock
+
     from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
 
     clear_probe_cache()
@@ -849,6 +864,7 @@ def test_interrupted_download_leaves_no_corrupt_files(tmp_path):
     import io
     import zipfile
     from unittest.mock import MagicMock
+
     from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
 
     clear_probe_cache()
@@ -874,7 +890,9 @@ def test_interrupted_download_leaves_no_corrupt_files(tmp_path):
             assert res is None
 
     # [핵심 검증]: 쓰기 도중 실패 시 목적지 경로에 손상된 파일이 절대 남지 않아야 함!
-    assert not target_bin.exists(), "치명적 결함: 쓰기 실패 후에도 목적지 경로에 깨진 바이너리가 잔존합니다!"
+    assert not target_bin.exists(), (
+        "치명적 결함: 쓰기 실패 후에도 목적지 경로에 깨진 바이너리가 잔존합니다!"
+    )
 
 
 def test_ffmpeg_bootstrap_worker_cancellation(qtbot, tmp_path):
@@ -893,8 +911,14 @@ def test_ffmpeg_bootstrap_worker_cancellation(qtbot, tmp_path):
                 return None
         return None
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.download_ffmpeg_binary", side_effect=blocking_download):
-        with patch("chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg", return_value=FFmpegProbeResult(status=FFmpegStatus.NOT_FOUND, path=None)):
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.download_ffmpeg_binary",
+        side_effect=blocking_download,
+    ):
+        with patch(
+            "chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg",
+            return_value=FFmpegProbeResult(status=FFmpegStatus.NOT_FOUND, path=None),
+        ):
             with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
                 worker.start()
                 time.sleep(0.05)
@@ -910,6 +934,7 @@ def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(tmp_path
     """[메모리 보호 검증] 대용량 바이너리 다운로드 시 전체를 RAM에 적재(resp.read())하지 않고 64KB 스트리밍하여 메모리 피크가 5MB 이하를 유지함을 검증."""
     import tracemalloc
     from unittest.mock import MagicMock
+
     from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
 
     clear_probe_cache()
@@ -927,7 +952,9 @@ def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(tmp_path
 
     resp = MagicMock()
     # read(amt)로 호출되면 64KB씩 스트리밍, read()로 인자 없이 호출되면 30MB 통째로 반환
-    resp.read.side_effect = lambda size=None: next(gen) if (size and size > 0) else (large_chunk * total_chunks)
+    resp.read.side_effect = lambda size=None: (
+        next(gen) if (size and size > 0) else (large_chunk * total_chunks)
+    )
     resp.headers = {"Content-Length": str(chunk_size * total_chunks)}
     resp.__enter__.return_value = resp
 
@@ -942,7 +969,9 @@ def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(tmp_path
 
     peak_mb = peak / (1024 * 1024)
     # [검증]: 64KB 스트리밍 방식은 1MB 미만이어야 함. 만약 기존 전체 적재(resp.read()) 방식이면 30MB 이상 치솟아 실패!
-    assert peak_mb < 5.0, f"메모리 폭발 발생! 피크 메모리 점유: {peak_mb:.2f}MB (허용 기준: 5.0MB 미만)"
+    assert peak_mb < 5.0, (
+        f"메모리 폭발 발생! 피크 메모리 점유: {peak_mb:.2f}MB (허용 기준: 5.0MB 미만)"
+    )
 
 
 def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(monkeypatch, tmp_path):
