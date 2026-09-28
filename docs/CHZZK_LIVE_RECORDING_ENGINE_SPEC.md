@@ -15,9 +15,14 @@
 | :--- | :--- | :--- | :--- |
 | **녹화 파이프라인** | FFmpeg 단독 (`-c copy`) | Streamlink 인제스트 + FFmpeg Muxing | **Streamlink 인제스트 기반 fMP4 무손실 직접 저장** |
 | **타임머신 (DVR)** | ❌ 지원 불가 | ✅ 전역 설정으로 지원 (개별 제어 불가) | ✅ **개별 작업/채널 단위 독립 제어** |
-| **세그먼트 복원력** | FFmpeg reconnect (소켓 프리징 취약) | 세그먼트당 최대 12회 재시도 | **Streamlink 세그먼트 재시도 방어** |
-| **컨테이너 보존** | MP4 (단일 moov) | TS 또는 MP4 (재인코딩/Muxing) | **무손실 fMP4 원본 그대로 안전 보존** |
+| **세그먼트 복원력** | FFmpeg reconnect (소켓 프리징 취약) | 세그먼트당 최대 12회 재시도 | **Streamlink 세그먼트 재시도 방어** (상세 설명 참조) |
+| **컨테이너 보존** | MP4 (단일 moov) | 확장자와 무관하게 fMP4 무손실 직접 저장 | **무손실 fMP4 원본 그대로 안전 보존** |
 | **사후 무결성 검증** | 단순 파일 크기/FFprobe duration | 미지원 | **fMP4 `moof` 박스 기반 초고속 누락 정밀 진단** |
+
+> **💡 Streamlink 세그먼트 재시도 방어 메커니즘**:  
+> 실시간 HLS 스트리밍 수신 중 네트워크 순간 단절, CDN 병목/스로틀링, 일시적 HTTP 404/502 응답이 발생했을 때:
+> - FFmpeg는 소켓 프리징(무한 대기)에 빠지거나 프로세스가 예기치 않게 종료되는 반면,
+> - Streamlink는 `--hls-segment-attempts <N>`(기본 3~5회 재시도), `--hls-segment-timeout`(조각별 타임아웃) 및 내부 슬라이딩 버퍼 큐를 통해 일시적인 네트워크 장애 상황에서도 세그먼트 누락 없이 끈질기게 재시도하여 녹화 파이프라인의 생존성을 극대화합니다.
 
 ---
 
@@ -25,19 +30,22 @@
 
 기존 `recordGUI` 등 전문 녹화 툴은 타임머신 기능이 **전역(Global) 설정**으로만 통제되어, 사용자가 특정 채널만 방송 처음부터 받고 다른 채널은 현재 시점부터 받는 등의 세분화된 운용이 불가능했습니다.
 
-본 프로젝트에서는 **작업 및 채널 단위(Per-Task/Per-Channel Configuration)**로 타임머신을 완벽히 독립 제어합니다.
+본 프로젝트에서는 **URL 입력 바, 작업 카드 및 채널 단위(Per-Input/Per-Task/Per-Channel Configuration)**로 타임머신을 완벽히 독립 제어합니다.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                   타임머신(DVR) 계층형 제어 아키텍처                  │
 ├────────────────────────────────────────────────────────────────────────┤
-│ 1. 채널별 기본 설정 (LiveChannel.use_dvr: bool)                        │
+│ 1. 메인 URL 입력 바 토글 (MainWindow Top Bar)                          │
+│    - 실시간 방송 링크 직접 입력 시 즉석에서 [타임머신 ON/OFF] 스위치 제공│
+│                                                                        │
+│ 2. 채널별 기본 설정 (LiveChannel.use_dvr: bool)                        │
 │    - 자동 감시 채널 등록 시 채널별 선호 타임머신 기본값 지정          │
 │                                                                        │
-│ 2. 실시간 작업 카드 개별 토글 (LiveTaskCard Widget)                    │
+│ 3. 실시간 작업 카드 개별 토글 (LiveTaskCard Widget)                    │
 │    - 큐에 등록된 개별 녹화 카드에서 즉석으로 [타임머신 ON/OFF] 토글    │
 │                                                                        │
-│ 3. Streamlink 실행 파라미터 동적 분기                                  │
+│ 4. Streamlink 실행 파라미터 동적 분기                                  │
 │    - use_dvr == True  ➔ streamlink ... --hls-live-restart            │
 │    - use_dvr == False ➔ streamlink ... (현재 실시간 라이브 엣지 수신) │
 └────────────────────────────────────────────────────────────────────────┘
@@ -80,28 +88,40 @@
 `fMP4 Integrity Checker`는 FFmpeg나 무거운 미디어 디코더를 일절 호출하지 않고, **순수 바이너리 레벨에서 MP4 Box Header를 순차 탐색**합니다 (수 GB 파일도 수십 ms 이내 분석 완료).
 
 #### 1) 시퀀스 번호 연속성 검사 (`mfhd`)
-- 각 `moof` 박스 내부의 `mfhd` (Movie Fragment Header Box)에는 1씩 단조 증가하는 `sequence_number`가 기록됩니다.
-- 검사 규칙:
+- 각 `moof` 박스 내부의 `mfhd` (Movie Fragment Header Box)에는 `sequence_number`가 기록됩니다.
+- **검사 규칙**:
   $$\text{Expected } Seq_{i} = Seq_{i-1} + 1$$
-- 만약 $Seq_{i} > Seq_{i-1} + 1$ 이라면, 네트워크 단절이나 CDN 수신 지연으로 인해 **중간 세그먼트가 유실(Drop)되었음을 즉시 확정**합니다.
+  - $Seq_{i} > Seq_{i-1} + 1$ 이면 중간 세그먼트가 유실(Drop)된 것으로 확정합니다.
+- **⚠ 실전 보정 필수**:
+  - 일부 인코더는 여러 개의 물리적 `moof`가 같은 `sequence_number`를 공유합니다 (예: 비디오/오디오 트랙별로 `moof`가 분리된 구조).
+  - 이를 그대로 검사하면 정상 파일에서도 대량의 오탐(False Positive)이 발생합니다.
+  - **보정 알고리즘**: `moof`를 순서대로 훑으며 **연속으로 동일한 `seq`가 나오는 구간을 하나의 그룹으로 묶은 뒤, 그 그룹 단위로 위 연속성 규칙을 적용**합니다.
 
 #### 2) 미디어 타임스탬프 불연속(Gap) 검사 (`tfdt` & `trun`)
-- 각 `moof`의 비디오 트랙 프래그먼트(`traf`) 내부:
-  - `tfdt`: 해당 프래그먼트의 시작 디코드 시간(`base_media_decode_time`)
-  - `trun`: 프래그먼트에 포함된 샘플들의 `sample_duration` 총합
-- 검사 규칙:
+- **트랙별(`traf`)로 독립 검사 수행**. 각 조각의:
+  - `tfdt.base_media_decode_time`: 시작 시각 (권위 있는 절대값)
+  - `trun`의 `sample_duration` 총합: 해당 조각의 실제 길이
+- **검사 규칙**:
   $$\Delta t = tfdt_{next} - \left( tfdt_{curr} + \sum \text{sample\_duration} \right)$$
-- 만약 $\Delta t > \text{허용 임계치(기본 1 프레임)}$ 이라면, 세그먼트 누락으로 인한 **영상 끊김/싱크 밀림 구간(Start Time ~ End Time 및 유실 초수)**을 정확히 기록합니다.
+  - $|\Delta t| > \text{허용 임계치(기본 2ms)}$ 이면 **유실($\Delta t > 0$) 또는 중첩($\Delta t < 0$)**으로 기록합니다.
+- **트랙 독립 검사의 필요성**:
+  - 한쪽 트랙(예: 오디오)만 부분 유실된 경우 다른 트랙의 `seq`는 정상일 수 있으므로, 1번(시퀀스 검사)만으로는 검출하지 못하는 트랙별 누락을 2번 검사로 완벽히 포착합니다.
 
 #### 3) 진단 결과 데이터 모델
 ```python
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
 @dataclass
 class SegmentGap:
+    track_id: int  # 어느 트랙에서 발생했는지 (2번 검사는 트랙별이므로 필수)
+    gap_type: str  # "sequence_gap" | "timestamp_gap" | "timestamp_overlap"
     start_time_sec: float
     end_time_sec: float
     lost_duration_sec: float
-    expected_seq: int
-    actual_seq: int
+    expected_seq: int | None = None
+    actual_seq: int | None = None
 
 
 @dataclass
@@ -111,7 +131,7 @@ class Fmp4IntegrityReport:
     total_duration_sec: float
     is_healthy: bool
     missing_fragment_count: int
-    gaps: list[SegmentGap]
+    gaps: list[SegmentGap] = field(default_factory=list)
 ```
 
 ---
