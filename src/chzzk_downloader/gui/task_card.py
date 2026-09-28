@@ -25,10 +25,12 @@ from chzzk_downloader.core.filename_generator import (
     resolve_duplicate_filename,
 )
 from chzzk_downloader.core.settings_manager import get_current_settings
-from chzzk_downloader.core.task_models import TaskSpec, TaskStatus
+from chzzk_downloader.core.task_models import TaskProgress, TaskSpec, TaskStatus
 from chzzk_downloader.core.url_parser import parse_chzzk_vod_url
 from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
+
+_DETACHED_LOADERS: set[QThread] = set()
 
 
 def match_default_quality(available_qualities: list[str], target_quality: str) -> str:
@@ -425,41 +427,39 @@ class TaskCardWidget(QFrame):
         super().leaveEvent(event)
         self.delete_btn.hide()
 
+    def _detach_thumb_loader(self) -> None:
+        """실행 중인 썸네일 로더 스레드를 안전하게 분리하여 백그라운드 종료를 대기하도록 보존합니다."""
+        if self._thumb_loader is not None:
+            if self._thumb_loader.isRunning():
+                try:
+                    self._thumb_loader.loaded.disconnect()
+                except Exception:
+                    pass
+                loader = self._thumb_loader
+                loader.setParent(None)
+                _DETACHED_LOADERS.add(loader)
+                loader.finished.connect(lambda ref=loader: _DETACHED_LOADERS.discard(ref))
+                loader.finished.connect(loader.deleteLater)
+                loader.quit()
+            self._thumb_loader = None
+
     def deleteLater(self) -> None:  # noqa: N802
         self.is_deleted = True
         self.spinner.stop()
-        if self._thumb_loader is not None and self._thumb_loader.isRunning():
-            try:
-                self._thumb_loader.loaded.disconnect()
-            except Exception:
-                pass
-            self._thumb_loader.quit()
-            self._thumb_loader.wait()
+        self._detach_thumb_loader()
         super().deleteLater()
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         self.is_deleted = True
         self.spinner.stop()
-        if self._thumb_loader is not None and self._thumb_loader.isRunning():
-            try:
-                self._thumb_loader.loaded.disconnect()
-            except Exception:
-                pass
-            self._thumb_loader.quit()
-            self._thumb_loader.wait()
+        self._detach_thumb_loader()
         super().closeEvent(event)
 
     def _load_thumbnail(self, url: str) -> None:
         """비동기로 썸네일 이미지를 다운로드하여 라벨에 표시합니다."""
         if not url or self.is_deleted:
             return
-        if self._thumb_loader is not None and self._thumb_loader.isRunning():
-            try:
-                self._thumb_loader.loaded.disconnect()
-            except Exception:
-                pass
-            self._thumb_loader.quit()
-            self._thumb_loader.wait()
+        self._detach_thumb_loader()
         self._thumb_loader = ThumbnailLoaderThread(url, parent=self)
         self._thumb_loader.loaded.connect(self._on_thumbnail_loaded)
         self._thumb_loader.start()
@@ -623,6 +623,22 @@ class TaskCardWidget(QFrame):
             else:
                 self.status_label.setText("대기 중...")
 
+    def update_progress(self, progress: TaskProgress) -> None:
+        """다운로드 진행 상황(3번 위치: 퍼센트, 속도, ETA)을 실시간으로 갱신합니다."""
+        if self.status != TaskStatus.DOWNLOADING:
+            return
+        self.status_label.show()
+        parts: list[str] = []
+        if progress.percentage > 0 or progress.downloaded_bytes > 0:
+            parts.append(f"{progress.percentage:.1f}%")
+        if progress.speed_str:
+            parts.append(progress.speed_str)
+        if progress.eta_str and progress.eta_seconds > 0:
+            parts.append(f"ETA {progress.eta_str}")
+
+        if parts:
+            self.status_label.setText(" | ".join(parts))
+
     def trigger_start_download(self) -> bool:
         """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 또는 QUEUED 상태 진입을 요청합니다."""
         if self.status != TaskStatus.READY:
@@ -706,12 +722,11 @@ class TaskCardWidget(QFrame):
 
     def reset_for_redownload(self) -> None:
         """동일 VOD 재입력 시 이전 세션 리소스 정리 및 클린 리셋 (충돌 방어 및 최신 설정 반영)."""
-        if self.status in (TaskStatus.DOWNLOADING, TaskStatus.STOPPED):
-            self.status = TaskStatus.READY
         self.error_message = ""
         self.selected_quality = ""
         self.custom_download_dir = None
         self.target_path = None
+        self.waiting_position = 0
         self.quality_combo.blockSignals(True)
         self.quality_combo.clear()
         self.quality_combo.blockSignals(False)

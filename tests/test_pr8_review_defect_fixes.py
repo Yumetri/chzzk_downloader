@@ -65,8 +65,10 @@ def test_close_immediately_after_startup_no_qthread_crash(
 
         if worker.isRunning():
             assert worker in _DETACHED_WORKERS
-            qtbot.waitUntil(lambda: not worker.isRunning(), timeout=2000)
-            assert worker not in _DETACHED_WORKERS
+            qtbot.waitUntil(
+                lambda: not worker.isRunning() and worker not in _DETACHED_WORKERS,
+                timeout=3000,
+            )
 
 
 # ---------------------------------------------------------------------------

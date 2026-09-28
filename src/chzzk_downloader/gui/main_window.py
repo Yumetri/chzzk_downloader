@@ -22,13 +22,13 @@ from PyQt6.QtWidgets import (
 
 from chzzk_downloader.config import SUCCESS_TOAST_DURATION_MS
 from chzzk_downloader.core.task_manager import TaskManager
-from chzzk_downloader.core.task_models import TaskSpec, TaskStatus
+from chzzk_downloader.core.task_models import TaskProgress, TaskSpec, TaskStatus
 from chzzk_downloader.core.url_parser import parse_chzzk_vod_url
 from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
 from chzzk_downloader.gui.task_card import TaskCardWidget
 from chzzk_downloader.gui.toast import ToastType, ToastWidget
-from chzzk_downloader.gui.workers import VodCheckWorker
+from chzzk_downloader.gui.workers import VodCheckWorker, VodDownloadWorker
 
 _DETACHED_WORKERS: set[QThread] = set()
 
@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
         self.resize(640, 480)
 
         self.task_manager = TaskManager(max_concurrent_vod=3)
+        self._download_workers: dict[str, VodDownloadWorker] = {}
         self._init_task_manager()
 
         self._worker: VodCheckWorker | None = None
@@ -177,6 +178,9 @@ class MainWindow(QMainWindow):
         self.task_manager.signals.task_failed.connect(self._on_task_failed)
         self.task_manager.signals.task_removed.connect(self._on_task_removed)
         self.task_manager.signals.queue_updated.connect(self._on_queue_updated)
+        self.task_manager.signals.task_progress_updated.connect(
+            self._on_task_progress
+        )
 
     def _init_ui(self) -> None:
         central_widget = QWidget(self)
@@ -302,6 +306,11 @@ class MainWindow(QMainWindow):
                 )
                 _DETACHED_WORKERS.add(vw_ref)
             self._cookie_verify_worker = None
+
+        if hasattr(self, "_download_workers"):
+            for worker in list(self._download_workers.values()):
+                self._detach_download_worker(worker)
+            self._download_workers.clear()
 
         if hasattr(self, "_settings_window") and self._settings_window is not None:
             self._settings_window.close()
@@ -666,6 +675,14 @@ class MainWindow(QMainWindow):
             auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
         )
 
+    def _detach_download_worker(self, worker: VodDownloadWorker) -> None:
+        """다운로드 워커를 안전하게 중지 및 분리하여 백그라운드에서 정리되도록 보존합니다."""
+        if worker.isRunning():
+            worker.cancel()
+            worker.setParent(None)
+            _DETACHED_WORKERS.add(worker)
+            worker.finished.connect(lambda ref=worker: _DETACHED_WORKERS.discard(ref))
+
     def _on_card_request_start_download(
         self, card: TaskCardWidget, spec: TaskSpec
     ) -> None:
@@ -675,6 +692,88 @@ class MainWindow(QMainWindow):
         if status == TaskStatus.QUEUED:
             pos = self.task_manager.get_waiting_position(spec.task_id)
             card.set_waiting_position(pos)
+
+    def _start_vod_download(self, task_id: str) -> None:
+        """DOWNLOADING 상태인 작업에 대해 백그라운드 VodDownloadWorker를 구동합니다."""
+        existing_worker = self._download_workers.get(task_id)
+        if existing_worker is not None and existing_worker.isRunning():
+            return
+
+        spec = self.task_manager.get_task_spec(task_id)
+        if not spec:
+            card = self.task_list_widget.find_task_card_by_id(task_id)
+            if card is not None:
+                spec = card.get_task_spec()
+        if not spec:
+            return
+
+        worker = VodDownloadWorker(spec, parent=self)
+        worker.progress_updated.connect(
+            lambda p, tid=task_id, w=worker: self._on_worker_progress(w, tid, p)
+        )
+        worker.download_finished.connect(
+            lambda tid, path, w=worker: self._on_worker_finished(w, tid, path)
+        )
+        worker.download_failed.connect(
+            lambda tid, etype, msg, tb, w=worker: self._on_worker_failed(
+                w, tid, etype, msg, tb
+            )
+        )
+        worker.download_stopped.connect(
+            lambda tid, w=worker: self._on_worker_stopped(w, tid)
+        )
+        worker.finished.connect(
+            lambda tid=task_id, w=worker: self._cleanup_worker(tid, w)
+        )
+
+        self._download_workers[task_id] = worker
+        worker.start()
+
+    def _cleanup_worker(self, task_id: str, worker: VodDownloadWorker) -> None:
+        """워커 종료 시 활성 워커 딕셔너리에서 안전하게 제거합니다."""
+        if self._download_workers.get(task_id) is worker:
+            self._download_workers.pop(task_id, None)
+
+    def _on_worker_progress(
+        self, worker: VodDownloadWorker, task_id: str, progress: TaskProgress
+    ) -> None:
+        """워커의 진행 상황을 TaskManager에 보고합니다 (UI 갱신은 TaskManager 100ms 스로틀링을 통해 단일화)."""
+        if self._download_workers.get(task_id) is not worker:
+            return
+        self.task_manager.report_progress(task_id, progress)
+
+    def _on_task_progress(self, task_id: str, progress: TaskProgress) -> None:
+        """TaskManager로부터 진행률 보고를 수신하여 해당 카드 UI를 갱신합니다."""
+        card = self.task_list_widget.find_task_card_by_id(task_id)
+        if card is not None and not card.is_deleted and not sip.isdeleted(card):
+            card.update_progress(progress)
+
+    def _on_worker_finished(
+        self, worker: VodDownloadWorker, task_id: str, final_file_path: str
+    ) -> None:
+        """워커 다운로드 성공 완료를 TaskManager에 통지합니다."""
+        if self._download_workers.get(task_id) is not worker:
+            return
+        self.task_manager.report_completed(task_id, final_file_path)
+
+    def _on_worker_failed(
+        self,
+        worker: VodDownloadWorker,
+        task_id: str,
+        err_type: str,
+        msg: str,
+        traceback_str: str,
+    ) -> None:
+        """워커 다운로드 실패를 TaskManager에 통지합니다."""
+        if self._download_workers.get(task_id) is not worker:
+            return
+        self.task_manager.report_failed(task_id, err_type, msg, traceback_str)
+
+    def _on_worker_stopped(self, worker: VodDownloadWorker, task_id: str) -> None:
+        """워커 다운로드 중지를 TaskManager에 통지합니다."""
+        if self._download_workers.get(task_id) is not worker:
+            return
+        self.task_manager.report_stopped(task_id)
 
     def _on_task_status_changed(
         self, task_id: str, old_status: TaskStatus, new_status: TaskStatus
@@ -686,6 +785,8 @@ class MainWindow(QMainWindow):
             if new_status == TaskStatus.QUEUED:
                 pos = self.task_manager.get_waiting_position(task_id)
                 card.set_waiting_position(pos)
+        if new_status == TaskStatus.DOWNLOADING:
+            self._start_vod_download(task_id)
 
     def _on_task_completed(self, task_id: str, final_file_path: str) -> None:
         """TaskManager로부터 작업 완료 알림을 수신합니다."""
@@ -713,11 +814,17 @@ class MainWindow(QMainWindow):
                 card.set_failed(TaskStatus.FAILED_DOWNLOAD, msg)
 
     def _on_card_request_stop_download(self, task_id: str) -> None:
-        """카드의 중지 요청을 TaskManager에 반영합니다."""
+        """카드의 중지 요청을 워커 및 TaskManager에 반영합니다."""
+        worker = self._download_workers.pop(task_id, None)
+        if worker is not None:
+            self._detach_download_worker(worker)
         self.task_manager.cancel_task(task_id)
 
     def _on_task_removed(self, task_id: str) -> None:
         """TaskManager로부터 작업 제거 알림을 수신하여 목록에서 카드를 제거합니다."""
+        worker = self._download_workers.pop(task_id, None)
+        if worker is not None:
+            self._detach_download_worker(worker)
         card = self.task_list_widget.find_task_card_by_id(task_id)
         if card is not None and not card.is_deleted and not sip.isdeleted(card):
             self.task_list_widget.remove_task_card(card)
