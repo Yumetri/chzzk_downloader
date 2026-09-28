@@ -159,6 +159,7 @@ class TaskManager:
 
             self._running_vod_ids.discard(task_id)
             self._running_live_ids.discard(task_id)
+            self._last_progress_time.pop(task_id, None)
             old_status = self._statuses.get(task_id)
             self._statuses[task_id] = TaskStatus.COMPLETED
 
@@ -208,6 +209,7 @@ class TaskManager:
 
             self._running_vod_ids.discard(task_id)
             self._running_live_ids.discard(task_id)
+            self._last_progress_time.pop(task_id, None)
             old_status = self._statuses.get(task_id)
             self._statuses[task_id] = new_status
 
@@ -237,6 +239,7 @@ class TaskManager:
 
             self._running_vod_ids.discard(task_id)
             self._running_live_ids.discard(task_id)
+            self._last_progress_time.pop(task_id, None)
             old_status = self._statuses.get(task_id)
             self._statuses[task_id] = TaskStatus.STOPPED
 

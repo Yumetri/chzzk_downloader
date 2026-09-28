@@ -21,10 +21,12 @@ from PyQt6.QtWidgets import (
 )
 
 from chzzk_downloader.config import SUCCESS_TOAST_DURATION_MS
+from chzzk_downloader.core.task_manager import TaskManager
+from chzzk_downloader.core.task_models import TaskSpec, TaskStatus
 from chzzk_downloader.core.url_parser import parse_chzzk_vod_url
 from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
-from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+from chzzk_downloader.gui.task_card import TaskCardWidget
 from chzzk_downloader.gui.toast import ToastType, ToastWidget
 from chzzk_downloader.gui.workers import VodCheckWorker
 
@@ -37,6 +39,8 @@ class TaskListWidget(QWidget):
     request_open_settings = pyqtSignal()
     request_naver_login = pyqtSignal()
     download_blocked = pyqtSignal(str)
+    card_download_requested = pyqtSignal(object, object)  # (TaskCardWidget, TaskSpec)
+    card_stop_requested = pyqtSignal(str)  # (task_id)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -92,9 +96,34 @@ class TaskListWidget(QWidget):
                 return card
         return None
 
+    def find_task_card_by_id(self, task_id: str) -> TaskCardWidget | None:
+        """주어진 task_id를 가진 작업 카드를 찾아 반환합니다."""
+        for card in self.get_all_cards():
+            if card.is_deleted or sip.isdeleted(card):
+                continue
+            if getattr(card, "task_id", None) == task_id:
+                return card
+        return None
+
     def has_task(self, video_no: str | None, raw_url: str) -> bool:
         """주어진 video_no 또는 raw_url을 가진 작업 카드가 이미 존재하는지 확인합니다."""
         return self.find_task_card(video_no, raw_url) is not None
+
+    def remove_task_card(self, card: TaskCardWidget) -> None:
+        """작업 카드를 UI 목록에서 안전하게 제거합니다."""
+        if card.is_deleted or sip.isdeleted(card):
+            return
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item is not None and self.list_widget.itemWidget(item) is card:
+                self.list_widget.takeItem(i)
+                break
+        card.deleteLater()
+        self.refresh_state()
+
+        main_win = self.window()
+        if hasattr(main_win, "task_manager"):
+            main_win.task_manager.remove_task(card.task_id)
 
     def add_task_card(self, card: TaskCardWidget) -> QListWidgetItem:
         """작업 카드를 목록 최상단에 추가하고 표시 상태를 갱신합니다."""
@@ -104,16 +133,20 @@ class TaskListWidget(QWidget):
         self.list_widget.setItemWidget(item, card)
 
         def _on_delete() -> None:
-            row = self.list_widget.row(item)
-            if row >= 0:
-                self.list_widget.takeItem(row)
-                card.deleteLater()
-                self.refresh_state()
+            self.remove_task_card(card)
 
         card.delete_requested.connect(_on_delete)
         card.request_open_cookies.connect(self.request_open_settings.emit)
         card.request_naver_login.connect(self.request_naver_login.emit)
         card.download_blocked.connect(self.download_blocked.emit)
+
+        if hasattr(card, "request_start_download"):
+            card.request_start_download.connect(
+                lambda spec, c=card: self.card_download_requested.emit(c, spec)
+            )
+        if hasattr(card, "request_stop_download"):
+            card.request_stop_download.connect(self.card_stop_requested.emit)
+
         self.refresh_state()
         return item
 
@@ -126,11 +159,24 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("치지직 VOD 다운로더")
         self.resize(640, 480)
 
+        self.task_manager = TaskManager(max_concurrent_vod=3)
+        self._init_task_manager()
+
         self._worker: VodCheckWorker | None = None
         self._recheck_workers: list[VodCheckWorker] = []
         self._url_context_menu: QMenu | None = None
         self.current_vod_info: VodInfo | None = None
         self._init_ui()
+
+    def _init_task_manager(self) -> None:
+        """TaskManager 시그널들을 MainWindow 슬롯에 바인딩합니다."""
+        self.task_manager.signals.task_status_changed.connect(
+            self._on_task_status_changed
+        )
+        self.task_manager.signals.task_completed.connect(self._on_task_completed)
+        self.task_manager.signals.task_failed.connect(self._on_task_failed)
+        self.task_manager.signals.task_removed.connect(self._on_task_removed)
+        self.task_manager.signals.queue_updated.connect(self._on_queue_updated)
 
     def _init_ui(self) -> None:
         central_widget = QWidget(self)
@@ -175,6 +221,12 @@ class MainWindow(QMainWindow):
         self.task_list_widget.request_open_settings.connect(self._on_settings_clicked)
         self.task_list_widget.request_naver_login.connect(self._on_naver_login_clicked)
         self.task_list_widget.download_blocked.connect(self._on_download_blocked)
+        self.task_list_widget.card_download_requested.connect(
+            self._on_card_request_start_download
+        )
+        self.task_list_widget.card_stop_requested.connect(
+            self._on_card_request_stop_download
+        )
         self.task_list = self.task_list_widget.list_widget
         self.empty_label = self.task_list_widget.empty_label
         main_layout.addWidget(self.task_list_widget)
@@ -479,11 +531,12 @@ class MainWindow(QMainWindow):
         # 동일 작업 재다운로드 확인 및 충돌 방어 (T0109)
         existing_card = self.task_list_widget.find_task_card(video_no, raw_url)
         if existing_card is not None:
-            # 읽는 중(ANALYZING), 녹화 중(DOWNLOADING), 대기 중(READY) 상태인 경우 즉시 거부 토스트 출력
+            # 읽는 중(ANALYZING), 녹화 중(DOWNLOADING), 대기/준비 중(READY, QUEUED) 상태인 경우 즉시 거부 토스트 출력
             if existing_card.status in (
                 TaskStatus.ANALYZING,
                 TaskStatus.DOWNLOADING,
                 TaskStatus.READY,
+                TaskStatus.QUEUED,
             ):
                 self.toast.show_toast(
                     '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
@@ -496,6 +549,8 @@ class MainWindow(QMainWindow):
             # 중지(STOPPED) 또는 실패 등 완결 상태인 경우 재다운로드 확인 모달
             if self._confirm_redownload_dialog():
                 # 이전 세션 워커/스레드 및 파일 핸들 정리, 클린 리셋
+                if hasattr(self, "task_manager"):
+                    self.task_manager.reset_task(existing_card.task_id)
                 existing_card.reset_for_redownload()
                 if video_no:
                     self._start_vod_check(existing_card, video_no)
@@ -610,3 +665,72 @@ class MainWindow(QMainWindow):
             ToastType.WARNING,
             auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
         )
+
+    def _on_card_request_start_download(
+        self, card: TaskCardWidget, spec: TaskSpec
+    ) -> None:
+        """카드의 다운로드 요청을 TaskManager에 등록합니다."""
+        status = self.task_manager.add_task(spec)
+        card.set_task_status(status)
+        if status == TaskStatus.QUEUED:
+            pos = self.task_manager.get_waiting_position(spec.task_id)
+            card.set_waiting_position(pos)
+
+    def _on_task_status_changed(
+        self, task_id: str, old_status: TaskStatus, new_status: TaskStatus
+    ) -> None:
+        """TaskManager로부터 상태 전이 알림을 수신하여 해당 카드 UI를 갱신합니다."""
+        card = self.task_list_widget.find_task_card_by_id(task_id)
+        if card is not None and not card.is_deleted and not sip.isdeleted(card):
+            card.set_task_status(new_status)
+            if new_status == TaskStatus.QUEUED:
+                pos = self.task_manager.get_waiting_position(task_id)
+                card.set_waiting_position(pos)
+
+    def _on_task_completed(self, task_id: str, final_file_path: str) -> None:
+        """TaskManager로부터 작업 완료 알림을 수신합니다."""
+        card = self.task_list_widget.find_task_card_by_id(task_id)
+        if card is not None and not card.is_deleted and not sip.isdeleted(card):
+            card.set_task_status(TaskStatus.COMPLETED)
+
+    def _on_task_failed(
+        self, task_id: str, err_type: str, msg: str, traceback_str: str
+    ) -> None:
+        """TaskManager로부터 작업 실패 알림을 수신합니다."""
+        card = self.task_list_widget.find_task_card_by_id(task_id)
+        if card is not None and not card.is_deleted and not sip.isdeleted(card):
+            err_lower = (err_type + " " + msg).lower()
+            if any(
+                k in err_lower for k in ("login", "adult", "성인", "로그인", "인증")
+            ):
+                card.set_failed(TaskStatus.FAILED_LOGIN_REQUIRED, msg)
+            elif any(
+                k in err_lower
+                for k in ("notfound", "invalid", "잘못된", "비공개", "404")
+            ):
+                card.set_failed(TaskStatus.FAILED_INVALID, msg)
+            else:
+                card.set_failed(TaskStatus.FAILED_DOWNLOAD, msg)
+
+    def _on_card_request_stop_download(self, task_id: str) -> None:
+        """카드의 중지 요청을 TaskManager에 반영합니다."""
+        self.task_manager.cancel_task(task_id)
+
+    def _on_task_removed(self, task_id: str) -> None:
+        """TaskManager로부터 작업 제거 알림을 수신하여 목록에서 카드를 제거합니다."""
+        card = self.task_list_widget.find_task_card_by_id(task_id)
+        if card is not None and not card.is_deleted and not sip.isdeleted(card):
+            self.task_list_widget.remove_task_card(card)
+
+    def _on_queue_updated(
+        self, running_vod: int, queued_vod: int, running_live: int
+    ) -> None:
+        """대기열 상태 변경 시 모든 대기 중인 카드의 순번을 갱신합니다."""
+        for card in self.task_list_widget.get_all_cards():
+            if (
+                not card.is_deleted
+                and not sip.isdeleted(card)
+                and card.status == TaskStatus.QUEUED
+            ):
+                pos = self.task_manager.get_waiting_position(card.task_id)
+                card.set_waiting_position(pos)

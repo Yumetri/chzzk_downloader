@@ -1,7 +1,6 @@
 """다운로드 작업 카드(Task Card) 위젯 모듈."""
 
 import urllib.request
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +25,7 @@ from chzzk_downloader.core.filename_generator import (
     resolve_duplicate_filename,
 )
 from chzzk_downloader.core.settings_manager import get_current_settings
+from chzzk_downloader.core.task_models import TaskSpec, TaskStatus
 from chzzk_downloader.core.url_parser import parse_chzzk_vod_url
 from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
@@ -66,18 +66,6 @@ def match_default_quality(available_qualities: list[str], target_quality: str) -
         pass
 
     return available_qualities[0]
-
-
-class TaskStatus(Enum):
-    """작업 카드 상태 열거형."""
-
-    ANALYZING = "ANALYZING"
-    READY = "READY"
-    DOWNLOADING = "DOWNLOADING"
-    STOPPED = "STOPPED"
-    FAILED_INVALID = "FAILED_INVALID"
-    FAILED_LOGIN_REQUIRED = "FAILED_LOGIN_REQUIRED"
-    FAILED_DOWNLOAD = "FAILED_DOWNLOAD"
 
 
 class SpinnerWidget(QWidget):
@@ -167,6 +155,8 @@ class TaskCardWidget(QFrame):
     download_started = pyqtSignal()
     download_stopped = pyqtSignal()
     download_blocked = pyqtSignal(str)
+    request_start_download = pyqtSignal(object)  # (TaskSpec)
+    request_stop_download = pyqtSignal(str)  # (task_id)
 
     def __init__(
         self,
@@ -174,6 +164,7 @@ class TaskCardWidget(QFrame):
         status: TaskStatus = TaskStatus.ANALYZING,
         vod_info: VodInfo | None = None,
         video_no: str = "",
+        task_id: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -185,6 +176,8 @@ class TaskCardWidget(QFrame):
             or (vod_info.video_no if vod_info else "")
             or (parse_chzzk_vod_url(raw_url) or "")
         )
+        self.task_id = task_id or self.video_no or self.raw_url
+        self.waiting_position: int = 0
         self.error_message: str = ""
         self.is_deleted: bool = False
         self._thumb_loader: ThumbnailLoaderThread | None = None
@@ -571,8 +564,69 @@ class TaskCardWidget(QFrame):
             return "rename"
         return "cancel"
 
+    def get_task_spec(self) -> TaskSpec:
+        """이 카드의 다운로드 실행 명세(TaskSpec)를 불변 객체로 생성하여 반환합니다."""
+        settings = get_current_settings()
+        ext = (
+            self.ext_combo.currentText()
+            if hasattr(self, "ext_combo") and self.ext_combo.currentText()
+            else settings.file_extension
+        )
+        quality = (
+            self.selected_quality
+            or (
+                self.quality_combo.currentText()
+                if hasattr(self, "quality_combo")
+                else ""
+            )
+            or settings.default_quality
+        )
+        save_dir = self.custom_download_dir or settings.download_dir
+        if self.vod_info:
+            filename = generate_vod_filename(self.vod_info, ext=ext)
+            target = save_dir / filename
+        else:
+            target = save_dir
+
+        return TaskSpec(
+            task_id=self.task_id,
+            video_url=self.raw_url,
+            is_live=False,
+            title=self.vod_info.video_title if self.vod_info else "",
+            streamer=self.vod_info.channel_name if self.vod_info else "",
+            selected_quality=quality,
+            selected_ext=ext,
+            save_path=self.target_path or target,
+        )
+
+    def set_task_status(self, status: TaskStatus) -> None:
+        """외부(TaskManager)로부터 상태 전이를 수신하여 카드를 갱신합니다."""
+        if self.status == status:
+            return
+        self.status = status
+        self._update_display()
+        self._apply_style()
+        if status == TaskStatus.DOWNLOADING:
+            self.download_started.emit()
+        elif status == TaskStatus.STOPPED:
+            self.download_stopped.emit()
+
+    def set_waiting_position(self, position: int) -> None:
+        """대기 순번을 갱신합니다 (음수/0은 대기 중... 기본 문구 유지)."""
+        self.waiting_position = position if position > 0 else 0
+        if self.status == TaskStatus.QUEUED:
+            self.status_label.show()
+            if self.waiting_position > 0:
+                self.status_label.setText(
+                    f"대기 중 (대기 순번: {self.waiting_position}번)"
+                )
+            else:
+                self.status_label.setText("대기 중...")
+
     def trigger_start_download(self) -> bool:
-        """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 상태로 진입합니다."""
+        """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 또는 QUEUED 상태 진입을 요청합니다."""
+        if self.status != TaskStatus.READY:
+            return False
         if not self.vod_info:
             return False
 
@@ -616,9 +670,15 @@ class TaskCardWidget(QFrame):
         if self.quality_combo.currentText():
             self.selected_quality = self.quality_combo.currentText()
 
-        self.status = TaskStatus.DOWNLOADING
-        self._update_display()
-        self.download_started.emit()
+        spec = self.get_task_spec()
+        self.request_start_download.emit(spec)
+
+        # MainWindow와 연결되어 있지 않은 독립 위젯 상태이거나,
+        # request_start_download 시그널에 의해 status가 변경되지 않은 경우 기본 전이
+        if self.status == TaskStatus.READY:
+            self.status = TaskStatus.DOWNLOADING
+            self._update_display()
+            self.download_started.emit()
         return True
 
     def _confirm_stop_dialog(self) -> bool:
@@ -630,13 +690,18 @@ class TaskCardWidget(QFrame):
 
     def trigger_stop_download(self) -> bool:
         """다운로드 중지 트리거: 확인 모달 승인 시 안전 중단 및 완결(STOPPED) 상태로 전이."""
+        if self.status not in (TaskStatus.DOWNLOADING, TaskStatus.QUEUED):
+            return False
         if not self._confirm_stop_dialog():
             return False
 
-        # 중지된 후에는 완결된 작업으로 처리되어 4번 위치에 대기 컨트롤이 나타나지 않음
-        self.status = TaskStatus.STOPPED
-        self._update_display()
-        self.download_stopped.emit()
+        self.request_stop_download.emit(self.task_id)
+
+        if self.status != TaskStatus.STOPPED:
+            self.status = TaskStatus.STOPPED
+            self._update_display()
+            self._apply_style()
+            self.download_stopped.emit()
         return True
 
     def reset_for_redownload(self) -> None:
@@ -690,6 +755,38 @@ class TaskCardWidget(QFrame):
             self.spinner.stop()
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("VOD")
+
+        elif self.status == TaskStatus.QUEUED:
+            self.status_label.show()
+            pos_text = (
+                f" (대기 순번: {self.waiting_position}번)"
+                if self.waiting_position > 0
+                else ""
+            )
+            self.status_label.setText(f"대기 중{pos_text}")
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
+            self.auth_container.hide()
+            self.ready_container.hide()
+            self.downloading_container.hide()
+            self.spinner.stop()
+            if not (self.vod_info and self.vod_info.thumbnail_url):
+                self.thumb_label.setText("대기")
+
+        elif self.status == TaskStatus.COMPLETED:
+            self.status_label.show()
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
+                dur_str = format_duration(self.vod_info.duration)
+                self.status_label.setText(f"완료 ({dur_str})")
+            else:
+                self.status_label.setText("완료")
+            self.auth_container.hide()
+            self.ready_container.hide()
+            self.downloading_container.hide()
+            self.spinner.stop()
+            if not (self.vod_info and self.vod_info.thumbnail_url):
+                self.thumb_label.setText("완료")
 
         elif self.status == TaskStatus.DOWNLOADING:
             self.status_label.show()
@@ -844,6 +941,8 @@ class TaskCardWidget(QFrame):
         self.status = TaskStatus.READY
         self.vod_info = info
         self.video_no = info.video_no or self.video_no
+        if info.video_no:
+            self.task_id = info.video_no
         self._populate_qualities(force_default=True)
         # 설정의 기본 확장자 반영
         settings = get_current_settings()
