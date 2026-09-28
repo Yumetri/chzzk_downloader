@@ -26,7 +26,9 @@ from chzzk_downloader.core.task_manager import TaskManager
 from chzzk_downloader.core.task_models import TaskProgress, TaskSpec, TaskStatus
 
 
-def _make_spec(task_id: str, title: str = "Test Video", is_live: bool = False) -> TaskSpec:
+def _make_spec(
+    task_id: str, title: str = "Test Video", is_live: bool = False
+) -> TaskSpec:
     return TaskSpec(
         task_id=task_id,
         video_url=f"https://chzzk.naver.com/video/{task_id}",
@@ -184,7 +186,9 @@ def test_defect8_concurrent_multithreaded_event_dispatching(qtbot) -> None:
     num_tasks = 20
     mgr = TaskManager(max_concurrent_vod=num_tasks)
     completed_events: list[tuple[str, str]] = []
-    mgr.signals.task_completed.connect(lambda tid, path: completed_events.append((tid, path)))
+    mgr.signals.task_completed.connect(
+        lambda tid, path: completed_events.append((tid, path))
+    )
 
     for i in range(num_tasks):
         mgr.add_task(_make_spec(f"vod-{i}"))
@@ -259,7 +263,9 @@ def test_defect11_progress_on_removed_task_no_leak() -> None:
     mgr.remove_task("vod-1")
 
     progress_signals: list[tuple[str, TaskProgress]] = []
-    mgr.signals.task_progress_updated.connect(lambda tid, p: progress_signals.append((tid, p)))
+    mgr.signals.task_progress_updated.connect(
+        lambda tid, p: progress_signals.append((tid, p))
+    )
 
     # 제거된 태스크에 대해 지연 프로그레스 보고
     prog = TaskProgress(task_id="vod-1", percentage=50.0)
@@ -278,7 +284,9 @@ def test_defect12_reorder_noop_no_signal() -> None:
     mgr.add_task(_make_spec("q2"))
 
     reordered_signals: list[tuple[str, int, int]] = []
-    mgr.signals.task_reordered.connect(lambda tid, oi, ni: reordered_signals.append((tid, oi, ni)))
+    mgr.signals.task_reordered.connect(
+        lambda tid, oi, ni: reordered_signals.append((tid, oi, ni))
+    )
 
     # q1은 이미 0번 인덱스임 -> 0번으로 재배치 요청 시 no-op
     ok = mgr.reorder_task("q1", 0)

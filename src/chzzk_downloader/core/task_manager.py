@@ -23,7 +23,9 @@ class TaskManagerSignals(QObject):
 
     # 1. 작업 생명주기 및 상태 변화 시그널
     task_added = pyqtSignal(str, object)  # (task_id, TaskSpec)
-    task_status_changed = pyqtSignal(str, object, object)  # (task_id, old_status, new_status)
+    task_status_changed = pyqtSignal(
+        str, object, object
+    )  # (task_id, old_status, new_status)
     task_completed = pyqtSignal(str, str)  # (task_id, final_file_path)
     task_failed = pyqtSignal(str, str, str, str)  # (task_id, err_type, msg, traceback)
     task_removed = pyqtSignal(str)  # (task_id)
@@ -191,7 +193,9 @@ class TaskManager:
         # 세분화된 실패 상태 매핑
         if any(k in err_lower for k in ("login", "adult", "성인", "로그인", "인증")):
             new_status = TaskStatus.FAILED_LOGIN_REQUIRED
-        elif any(k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")):
+        elif any(
+            k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")
+        ):
             new_status = TaskStatus.FAILED_INVALID
         else:
             new_status = TaskStatus.FAILED_DOWNLOAD
