@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import inspect
 import io
 import subprocess
 import sys
+import time
+import tracemalloc
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -22,6 +26,7 @@ from chzzk_downloader.core.ffmpeg_manager import (
     ensure_ffmpeg_available,
     get_candidate_ffmpeg_paths,
     get_candidate_ffprobe_paths,
+    get_default_ffmpeg_install_dir,
     get_ffmpeg_compatible_args,
     get_ffmpeg_path,
     get_ffprobe_path,
@@ -64,8 +69,10 @@ def clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # 4. PATH 탐색(shutil.which) 기본 None 반환 격리
     monkeypatch.setattr("shutil.which", lambda cmd: None)
 
-    # 5. 사용자 홈 디렉터리(~/.chzzk_downloader) 격리
-    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    # 5. 사용자 홈 디렉터리(~/.chzzk_downloader/bin) 격리
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
 
     return tmp_path
 
@@ -435,9 +442,13 @@ def test_is_ffprobe_available_and_caching(tmp_path: Path) -> None:
 
 @pytest.mark.ticket("T0110")
 def test_probe_media_file_and_verify_integrity(tmp_path: Path) -> None:
-    """[T0110] probe_media_file 및 verify_media_file_integrity 스트림 검증 로직 테스트."""
+    """[T0110] probe_media_file 및 verify_media_file_integrity 매직 넘버 및 재생 시간 무결성 검증 테스트."""
+    # 정상 MP4 ISO BMFF 헤더를 가진 모의 파일 생성 (ftyp 박스)
     video_file = tmp_path / "output.mp4"
-    video_file.write_text("fake video content", encoding="utf-8")
+    valid_mp4_header = (
+        b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + b"\x00" * 100
+    )
+    video_file.write_bytes(valid_mp4_header)
 
     fake_json_output = (
         "{\n"
@@ -461,26 +472,56 @@ def test_probe_media_file_and_verify_integrity(tmp_path: Path) -> None:
         return_value=tmp_path / "ffprobe.exe",
     ):
         with patch("subprocess.run", return_value=mock_proc):
+            # 1. 정상 미디어 프로빙
             info = probe_media_file(video_file)
             assert info is not None
             assert len(info["streams"]) == 2
 
-            ok, msg = verify_media_file_integrity(video_file)
+            # 2. 무결성 검증 성공 (재생 시간 일치)
+            ok, msg = verify_media_file_integrity(video_file, expected_duration=120.0)
             assert ok is True
             assert "검증 완료" in msg
 
-    # 0바이트 파일 실패 검증
+            # 3. 기대 재생 시간과 불일치 시 실패 검증
+            ok_diff, msg_diff = verify_media_file_integrity(
+                video_file, expected_duration=60.0
+            )
+            assert ok_diff is False
+            assert "초과합니다" in msg_diff
+
+    # 4. 가짜 텍스트 파일(.mp4 확장자 위장) 매직 바이트 차단 검증
+    fake_txt_video = tmp_path / "fake_text.mp4"
+    fake_txt_video.write_text("fake video content that is plain text", encoding="utf-8")
+    ok_txt, msg_txt = verify_media_file_integrity(fake_txt_video)
+    assert ok_txt is False
+    assert "컨테이너 헤더 검증 실패" in msg_txt
+
+    # 5. 0바이트 파일 실패 검증
     empty_file = tmp_path / "empty.mp4"
     empty_file.touch()
     ok_empty, msg_empty = verify_media_file_integrity(empty_file)
     assert ok_empty is False
     assert "0바이트" in msg_empty
 
-    # 존재하지 않는 파일 검증
+    # 6. 존재하지 않는 파일 검증
     missing_file = tmp_path / "missing.mp4"
     ok_missing, msg_missing = verify_media_file_integrity(missing_file)
     assert ok_missing is False
     assert "존재하지 않습니다" in msg_missing
+
+    # 7. 재생 시간 0초(손상된 스트림) 실패 검증
+    fake_zero_dur = '{"streams": [{"codec_type": "video", "duration": "0.0"}], "format": {"duration": "0.0"}}'
+    mock_zero_proc = subprocess.CompletedProcess(
+        args=["ffprobe"], returncode=0, stdout=fake_zero_dur, stderr=""
+    )
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.get_ffprobe_path",
+        return_value=tmp_path / "ffprobe.exe",
+    ):
+        with patch("subprocess.run", return_value=mock_zero_proc):
+            ok_zero, msg_zero = verify_media_file_integrity(video_file)
+            assert ok_zero is False
+            assert "재생 시간이 비정상적입니다" in msg_zero
 
 
 # ==============================================================================
@@ -693,3 +734,249 @@ def test_step6_auto_download_bootstrap_failure_blocks_download(
         assert card.status == TaskStatus.READY
         assert len(blocked) == 1
         assert "FFmpeg를 사용할 수 없습니다" in blocked[0]
+
+
+@pytest.mark.ticket("T0110")
+def test_corrupted_intermediate_candidate_falls_back_to_valid_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[T0110] 상위 계층(%TEMP%)에 손상된 바이너리가 있어도 하위 계층(PATH 등)으로 정상 폴백되는지 검증."""
+    # 1. %TEMP% 디렉터리에 실행 불가능한 더미 파일 생성
+    temp_dir = tmp_path / "temp"
+    temp_dir.mkdir()
+    corrupted_temp_ffmpeg = temp_dir / DEFAULT_FFMPEG_BINARY_NAME
+    corrupted_temp_ffmpeg.write_text("corrupted binary", encoding="utf-8")
+    monkeypatch.setenv("TEMP", str(temp_dir))
+
+    # 2. PATH에 정상 작동하는 FFmpeg 가상 경로 설정
+    valid_ffmpeg = tmp_path / "bin" / DEFAULT_FFMPEG_BINARY_NAME
+    valid_ffmpeg.parent.mkdir()
+    valid_ffmpeg.write_text("valid binary", encoding="utf-8")
+    monkeypatch.setattr(
+        "shutil.which", lambda name: str(valid_ffmpeg) if name == "ffmpeg" else None
+    )
+
+    # subprocess.run 실행 시: corrupted 실행 시 returncode 1, valid 실행 시 returncode 0
+    def mock_run(cmd, *args, **kwargs):
+        cmd_path = str(cmd[0])
+        if str(corrupted_temp_ffmpeg) in cmd_path:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1, stdout="", stderr="Corrupted ELF/PE header"
+            )
+        if str(valid_ffmpeg) in cmd_path:
+            if "-version" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout="ffmpeg version 6.1.1-essentials\n",
+                    stderr="",
+                )
+            if "-h" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout="HLS demuxer:\n  -extension_picky\n",
+                    stderr="",
+                )
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=mock_run):
+        # verify_executable=True로 검색 시 손상된 %TEMP%를 건너뛰고 PATH의 valid_ffmpeg를 반환해야 함
+        resolved = resolve_ffmpeg_path(verify_executable=True)
+        assert resolved == valid_ffmpeg.resolve()
+
+        # probe_ffmpeg(None) 역시 정상적으로 valid_ffmpeg로 판정
+        probe_res = probe_ffmpeg(None)
+        assert probe_res.status == FFmpegStatus.AVAILABLE
+        assert probe_res.path == valid_ffmpeg.resolve()
+
+
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_manager_has_no_qt_dependency() -> None:
+    """[T0110] [Core 순수성 검증] Core 계층(ffmpeg_manager.py)은 PyQt6 등 GUI 프레임워크에 일체 의존하지 않아야 함."""
+    import chzzk_downloader.core.ffmpeg_manager as fm
+
+    source = inspect.getsource(fm)
+    assert "PyQt6" not in source, (
+        "Core 계층(ffmpeg_manager.py)에 PyQt6 의존성이 존재합니다! 완전 분리되어야 합니다."
+    )
+    assert "QApplication" not in source, "Core 계층에 QApplication 참조가 존재합니다."
+    assert "processEvents" not in source, (
+        "Core 계층에 GUI 이벤트 루프 조작(processEvents)이 존재합니다."
+    )
+
+
+@pytest.mark.ticket("T0110")
+def test_concurrent_ffmpeg_downloads_no_race_collision(tmp_path: Path) -> None:
+    """[T0110] [동시성 검증] 다중 스레드가 동시에 download_ffmpeg_binary를 호출해도 락과 더블체크로 충돌(WinError 32) 없이 안전하게 완료됨을 검증."""
+    clear_probe_cache()
+    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"concurrent_test_payload")
+    zip_data = zip_buffer.getvalue()
+
+    download_count = 0
+
+    def mock_urlopen(req, *args, **kwargs):
+        nonlocal download_count
+        download_count += 1
+        time.sleep(0.05)
+        resp = MagicMock()
+        resp.read.side_effect = [zip_data, b""]
+        resp.headers = {"Content-Length": str(len(zip_data))}
+        resp.__enter__.return_value = resp
+        return resp
+
+    def mock_run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="ffmpeg version 6.0-essentials_build Copyright\n",
+            stderr="",
+        )
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        with patch("subprocess.run", side_effect=mock_run):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [
+                    executor.submit(download_ffmpeg_binary, target_dir=tmp_path)
+                    for _ in range(5)
+                ]
+                results = [f.result() for f in futures]
+
+    # 모든 스레드가 정상적인 바이너리 경로를 반환받음
+    for res in results:
+        assert res == target_bin
+    assert target_bin.exists()
+    # 더블체크 락에 의해 실제 원격 다운로드는 1회만 수행됨!
+    assert download_count == 1
+
+
+@pytest.mark.ticket("T0110")
+def test_interrupted_download_leaves_no_corrupt_files(tmp_path: Path) -> None:
+    """[T0110] [원자성 검증] 압축 해제 및 파일 쓰기 도중 예외 발생 시 목적지 경로에 깨진 바이너리가 남지 않고 완벽히 격리됨을 검증."""
+    clear_probe_cache()
+    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"valid_zip_content")
+    zip_data = zip_buffer.getvalue()
+
+    resp = MagicMock()
+    resp.read.return_value = zip_data
+    resp.headers = {"Content-Length": str(len(zip_data))}
+    resp.__enter__.return_value = resp
+
+    def failing_copy(src, dst):
+        dst.write(b"corrupted_partial_data")
+        raise OSError("디스크 공간 부족 또는 네트워크 끊김")
+
+    with patch("urllib.request.urlopen", return_value=resp):
+        with patch("shutil.copyfileobj", side_effect=failing_copy):
+            res = download_ffmpeg_binary(target_dir=tmp_path)
+            assert res is None
+
+    # [핵심 검증]: 쓰기 도중 실패 시 목적지 경로에 손상된 파일이 절대 남지 않아야 함!
+    assert not target_bin.exists(), (
+        "치명적 결함: 쓰기 실패 후에도 목적지 경로에 깨진 바이너리가 잔존합니다!"
+    )
+
+
+@pytest.mark.ticket("T0110")
+def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(
+    tmp_path: Path,
+) -> None:
+    """[T0110] [메모리 보호 검증] 대용량 바이너리 다운로드 시 전체를 RAM에 적재(resp.read())하지 않고 64KB 스트리밍하여 메모리 피크가 5MB 이하를 유지함을 검증."""
+    clear_probe_cache()
+    chunk_size = 64 * 1024
+    total_chunks = 480  # 약 30MB
+    large_chunk = b"A" * chunk_size
+
+    def stream_chunks():
+        for _ in range(total_chunks):
+            yield large_chunk
+        while True:
+            yield b""
+
+    gen = stream_chunks()
+
+    resp = MagicMock()
+    # read(amt)로 호출되면 64KB씩 스트리밍, read()로 인자 없이 호출되면 30MB 통째로 반환
+    resp.read.side_effect = lambda size=None: (
+        next(gen) if (size and size > 0) else (large_chunk * total_chunks)
+    )
+    resp.headers = {"Content-Length": str(chunk_size * total_chunks)}
+    resp.__enter__.return_value = resp
+
+    tracemalloc.start()
+    tracemalloc.reset_peak()
+
+    with patch("urllib.request.urlopen", return_value=resp):
+        download_ffmpeg_binary(target_dir=tmp_path)
+
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    peak_mb = peak / (1024 * 1024)
+    # [검증]: 64KB 스트리밍 방식은 1MB 미만이어야 함. 만약 기존 전체 적재(resp.read()) 방식이면 30MB 이상 치솟아 실패!
+    assert peak_mb < 5.0, (
+        f"메모리 폭발 발생! 피크 메모리 점유: {peak_mb:.2f}MB (허용 기준: 5.0MB 미만)"
+    )
+
+
+@pytest.mark.ticket("T0110")
+def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """[T0110] 설치 폴더 생성 시 권한 오류(OSError) 발생 시 tempfile 폴백 검증."""
+
+    def raise_oserror(*args, **kwargs):
+        raise PermissionError("Access denied")
+
+    monkeypatch.setattr(Path, "mkdir", raise_oserror)
+    fallback = get_default_ffmpeg_install_dir()
+    assert fallback is not None
+    assert "chzzk_downloader" in str(fallback) or str(fallback) in str(tmp_path)
+
+
+@pytest.mark.ticket("T0110")
+def test_download_ffmpeg_binary_mkdir_permission_error() -> None:
+    """[T0110] download_ffmpeg_binary에서 디렉터리 생성 실패 시 크래시 없이 None 반환 검증."""
+    with patch.object(Path, "mkdir", side_effect=PermissionError("Permission denied")):
+        res = download_ffmpeg_binary(target_dir="/nonexistent/forbidden/path")
+        assert res is None
+
+
+@pytest.mark.ticket("T0110")
+def test_verify_media_file_integrity_ffprobe_missing_with_valid_magic_bytes(
+    tmp_path: Path,
+) -> None:
+    """[T0110] FFprobe 부재 환경에서 매직 바이트가 유효한 미디어 파일은 통과하고 가짜 텍스트 파일은 차단되는지 검증."""
+    # 1. 가짜 텍스트 파일
+    fake_txt = tmp_path / "fake.mp4"
+    fake_txt.write_text("just text", encoding="utf-8")
+
+    # 2. 유효한 MP4 헤더 파일
+    valid_mp4 = tmp_path / "real.mp4"
+    valid_mp4.write_bytes(
+        b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + b"\x00" * 64
+    )
+
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffprobe_available", return_value=False
+    ):
+        with patch(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffprobe_path", return_value=None
+        ):
+            # 텍스트 파일은 FFprobe 없어도 차단
+            ok_txt, msg_txt = verify_media_file_integrity(fake_txt)
+            assert ok_txt is False
+            assert "컨테이너 헤더 검증 실패" in msg_txt
+
+            # 매직 넘버가 유효한 파일은 FFprobe 부재 시 크기 및 매직 넘버 확인으로 통과
+            ok_mp4, msg_mp4 = verify_media_file_integrity(valid_mp4)
+            assert ok_mp4 is True
+            assert "헤더 매직 넘버" in msg_mp4

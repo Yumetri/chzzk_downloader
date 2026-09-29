@@ -1,6 +1,7 @@
 """작업 카드(TaskCard) 다운로드 차단 가드(FFmpeg 미가용, 동일 VOD 중복 차단, 빠른 연타 차단 및 삭제 카드 방어) GUI 테스트."""
 
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -352,3 +353,32 @@ def test_deleted_card_can_be_readded_after_deletion(main_window, qtbot) -> None:
         assert main_window.task_list_widget.list_widget.count() == 1
         readded_card = main_window.task_list_widget.get_all_cards()[0]
         assert readded_card.status in (TaskStatus.READY, TaskStatus.DOWNLOADING)
+
+
+@pytest.mark.ticket("T0110")
+def test_task_card_save_dir_mkdir_oserror(qtbot, tmp_path: Path) -> None:
+    """[T0110] 다운로드 시작 시 저장 경로 생성 실패(권한 부족) 시 다운로드가 차단되고 에러 시그널이 방출되는지 검증."""
+    mock_vod = VodInfo(
+        video_no="12345", video_title="테스트 영상", channel_name="스트리머"
+    )
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/12345",
+        status=TaskStatus.READY,
+        vod_info=mock_vod,
+    )
+    qtbot.addWidget(card)
+
+    blocked_reasons: list[str] = []
+    card.download_blocked.connect(blocked_reasons.append)
+
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
+    ):
+        with patch.object(
+            Path, "mkdir", side_effect=PermissionError("폴더 생성 권한 없음")
+        ):
+            started = card.trigger_start_download()
+            assert started is False
+            assert card.status == TaskStatus.READY
+            assert len(blocked_reasons) == 1
+            assert "저장 폴더를 생성할 수 없습니다" in blocked_reasons[0]
