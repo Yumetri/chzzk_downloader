@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Any
 
 from PyQt6.QtWidgets import (
@@ -126,6 +127,12 @@ class FeedbackShowcaseWindow(QMainWindow):
             self._demo_toast_ffmpeg_unavailable,
             "#d97706",
         )
+        self._add_btn(
+            toast_layout,
+            "[T08] 다운로드 완료 성공 (+ 파일명, 2초 자동소멸)",
+            self._demo_toast_download_completed,
+            "#059669",
+        )
         toast_layout.addStretch()
         columns_layout.addWidget(toast_group, 1)
 
@@ -185,7 +192,7 @@ class FeedbackShowcaseWindow(QMainWindow):
 
         # 탭 2: 작업 목록 카드 프리뷰
         self.card_tab = self._create_cards_tab()
-        self.tabs.addTab(self.card_tab, "🎴 작업 목록 카드 갤러리 (7대 상태)")
+        self.tabs.addTab(self.card_tab, "🎴 작업 목록 카드 갤러리 (9대 상태)")
 
         root_layout.addWidget(self.tabs, 1)
 
@@ -312,6 +319,14 @@ class FeedbackShowcaseWindow(QMainWindow):
             auto_dismiss_ms=2000,
         )
 
+    def _demo_toast_download_completed(self) -> None:
+        self._log("[T08] 다운로드 완료 성공 토스트 호출")
+        self.toast.show_toast(
+            "+ 다운로드 완료: [스트리머A] 2026-09-07 방송 다시보기.mp4",
+            ToastType.SUCCESS,
+            auto_dismiss_ms=2000,
+        )
+
     # --- 모달 데모 메서드 ---
     def _demo_modal_stop_download(self) -> None:
         self._log("[M01] 다운로드 중지 확인 모달 호출 대기...")
@@ -401,7 +416,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         layout.setSpacing(8)
 
         info_lbl = QLabel(
-            "💡 작업 카드의 7대 상태별 레이아웃(정상 대기/분석 중/다운로드 중/중지 및 실패 빨간색·주황색 바, 치지직 뱃지, 툴팁)을 확인하세요.",
+            "💡 작업 카드의 9대 상태별 레이아웃(대기 중/정상 대기/분석 중/다운로드 중/중지/완료 및 실패 빨간색·주황색 바, 치지직 뱃지, 우상단 호버 툴바)을 확인하세요.",
             container,
         )
         info_lbl.setStyleSheet("color: #9ca3af; font-size: 12px; margin-bottom: 2px;")
@@ -537,6 +552,32 @@ class FeedbackShowcaseWindow(QMainWindow):
             card_download_fail,
         )
 
+        # [C08] COMPLETED
+        card_completed = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/15021267",
+            status=TaskStatus.READY,
+            vod_info=mock_ready_vod,
+        )
+        card_completed.set_completed(Path(__file__).resolve())
+        self._add_card_section(
+            scroll_layout,
+            "[C08] 완료 (COMPLETED) - 완료 (재생시간), 우상단 마우스 호버 시 3대 액션 툴바 [📁 폴더 열기] + [▶ 재생] + [✕ 삭제]",
+            card_completed,
+        )
+
+        # [C09] QUEUED
+        card_queued = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/15033444",
+            status=TaskStatus.QUEUED,
+            vod_info=mock_downloading_vod,
+        )
+        card_queued.set_waiting_position(2)
+        self._add_card_section(
+            scroll_layout,
+            "[C09] 대기 중 (QUEUED) - 대기 순번 라벨 (대기 순번: 2번), 썸네일 대기 텍스트",
+            card_queued,
+        )
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
@@ -572,6 +613,15 @@ class FeedbackShowcaseWindow(QMainWindow):
         card.download_stopped.connect(
             lambda: self._log(f"작업 카드: [■ 다운로드 중지] 클릭됨 ({card.raw_url})")
         )
+
+        if hasattr(card, "open_folder_btn"):
+            card.open_folder_btn.clicked.connect(
+                lambda: self._log(f"작업 카드: [📁 폴더 열기] 클릭됨 ({card.raw_url})")
+            )
+        if hasattr(card, "play_btn"):
+            card.play_btn.clicked.connect(
+                lambda: self._log(f"작업 카드: [▶ 미디어 재생] 클릭됨 ({card.raw_url})")
+            )
 
         sec_layout.addWidget(card)
         layout.addWidget(sec_box)
