@@ -6,9 +6,9 @@ from pathlib import Path
 
 
 class TaskStatus(Enum):
-    """작업 10대 생명주기 상태 코드 (RFC #87 C00 ~ C07, C09)."""
+    """작업 9대 생명주기 상태 코드 (RFC #87 C01 ~ C09)."""
 
-    QUEUED = "QUEUED"  # C00: 대기 중 (창구 만석으로 대기열에서 차례를 기다림)
+    QUEUED = "QUEUED"  # C09: 대기 중 (창구 만석으로 대기열에서 차례를 기다림)
     ANALYZING = "ANALYZING"  # C01: URL 분석 중
     READY = "READY"  # C02: 준비 완료 (다운로드 옵션 확인 및 시작 대기)
     DOWNLOADING = "DOWNLOADING"  # C03: 다운로드/녹화 실행 중
@@ -16,7 +16,7 @@ class TaskStatus(Enum):
     FAILED_INVALID = "FAILED_INVALID"  # C05: 링크/URL 오류
     FAILED_LOGIN_REQUIRED = "FAILED_LOGIN_REQUIRED"  # C06: 성인인증/로그인 필요
     FAILED_DOWNLOAD = "FAILED_DOWNLOAD"  # C07: 다운로드/네트워크 실패
-    COMPLETED = "COMPLETED"  # C09: 다운로드 및 검증 완료
+    COMPLETED = "COMPLETED"  # C08: 다운로드 및 검증 완료
 
 
 @dataclass(frozen=True)
