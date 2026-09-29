@@ -1,13 +1,44 @@
-"""비동기 백그라운드 작업자 모듈."""
+import glob
+import math
+import time
+import traceback
+from pathlib import Path
+from typing import Any, cast
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from chzzk_downloader.config import DEFAULT_USER_AGENT
+from chzzk_downloader.core.task_models import TaskProgress, TaskSpec
 from chzzk_downloader.core.ytdlp import (
     VodInfo,
     VodNotFoundError,
     YtDlpError,
     extract_vod_info,
 )
+
+
+class DownloadCancelledError(Exception):
+    """다운로드가 사용자에 의해 취소되었을 때 발생하는 내부 예외."""
+
+
+def format_speed(speed: float) -> str:
+    """초당 바이트 수를 속도 문자열(예: '15.4 MB/s', '1.2 GB/s')로 변환합니다."""
+    if math.isnan(speed) or math.isinf(speed) or speed <= 0:
+        return "0.0 KB/s"
+    if speed < 1024 * 1024:
+        return f"{speed / 1024:.1f} KB/s"
+    if speed < 1024 * 1024 * 1024:
+        return f"{speed / (1024 * 1024):.1f} MB/s"
+    return f"{speed / (1024 * 1024 * 1024):.1f} GB/s"
+
+
+def format_eta(seconds: int) -> str:
+    """초 단위 시간을 ETA 문자열(예: '00:03:25')로 변환합니다."""
+    if seconds <= 0:
+        return "00:00:00"
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 class VodCheckWorker(QThread):
@@ -104,3 +135,211 @@ class FFmpegBootstrapWorker(QThread):
                 )
         except Exception as e:
             self.finished_bootstrap.emit(False, f"FFmpeg 준비 중 예외 발생: {e}")
+
+
+def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
+    """TaskSpec으로부터 yt-dlp 다운로드 옵션을 빌드합니다.
+
+    - 네이버 LiveCloud CDN 400 차단 방어 (Referer, User-Agent)
+    - 최신 FFmpeg(v6.1+)의 .m4v 거부 방어 (-extension_picky 0, -allowed_extensions ALL)
+    - 쿠키 세션 및 컨테이너 리먹스(mp4 등) 옵션 주입
+    """
+    save_path = Path(task_spec.save_path)
+    save_dir = save_path.parent
+    ext = task_spec.selected_ext or "mp4"
+
+    # 화질 선택 포맷 문자열
+    quality = task_spec.selected_quality
+    if quality and quality.lower() not in ("best", "최고 화질", "최고화질"):
+        format_str = f"bestvideo[format_id*={quality}]+bestaudio/best[format_id*={quality}]/bestvideo+bestaudio/best"
+    else:
+        format_str = "bestvideo+bestaudio/best"
+
+    # FFmpeg 경로 및 호환 인자 획득
+    from chzzk_downloader.core.ffmpeg_manager import (
+        get_ffmpeg_compatible_args,
+        get_ffmpeg_path,
+    )
+
+    ffmpeg_bin = get_ffmpeg_path()
+    compat_args = get_ffmpeg_compatible_args(ffmpeg_bin) or [
+        "-extension_picky",
+        "0",
+        "-allowed_extensions",
+        "ALL",
+    ]
+
+    escaped_stem = save_path.stem.replace("%", "%%")
+    opts: dict[str, Any] = {
+        "format": format_str,
+        "outtmpl": {"default": str(save_dir / f"{escaped_stem}.%(ext)s")},
+        "remuxvideo": ext,
+        "postprocessors": [
+            {
+                "key": "FFmpegVideoRemuxer",
+                "preferedformat": ext,
+            }
+        ],
+        "http_headers": {
+            "Referer": "https://chzzk.naver.com/",
+            "User-Agent": DEFAULT_USER_AGENT,
+        },
+        "postprocessor_args": {"ffmpeg": compat_args},
+        "downloader_args": {"ffmpeg": compat_args},
+        "quiet": True,
+        "no_warnings": True,
+        "nocheckcertificate": False,
+    }
+
+    if ffmpeg_bin:
+        opts["ffmpeg_location"] = str(ffmpeg_bin)
+
+    from chzzk_downloader.core.cookie_manager import (
+        get_cookie_file_path,
+        has_valid_cookies,
+    )
+
+    if has_valid_cookies():
+        opts["cookiefile"] = str(get_cookie_file_path())
+
+    return opts
+
+
+class VodDownloadWorker(QThread):
+    """백그라운드 스레드에서 VOD 다운로드를 실행하는 비동기 작업자 (T0111)."""
+
+    progress_updated = pyqtSignal(TaskProgress)
+    download_finished = pyqtSignal(str, str)  # (task_id, final_file_path)
+    download_failed = pyqtSignal(str, str, str, str)  # (task_id, err_type, msg, tb)
+    download_stopped = pyqtSignal(str)  # (task_id)
+
+    def __init__(self, task_spec: TaskSpec, parent=None) -> None:
+        super().__init__(parent)
+        self.task_spec = task_spec
+        self.task_id = task_spec.task_id
+        self._is_cancelled = False
+        self._last_progress_emit_time = 0.0
+        self._ydl_opts: dict[str, Any] = {}
+
+    def cancel(self) -> None:
+        """다운로드 작업을 안전하게 취소 요청합니다."""
+        self._is_cancelled = True
+
+    def _progress_hook(self, d: dict[str, Any]) -> None:
+        """yt-dlp 내부 진행 상태 콜백 (취소 감지 및 100ms 스로틀링 진행률 전달)."""
+        if self._is_cancelled:
+            raise DownloadCancelledError("다운로드가 사용자에 의해 취소되었습니다.")
+
+        status = d.get("status")
+        if status == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes") or 0
+            pct = (downloaded / total * 100.0) if total > 0 else 0.0
+            pct = min(100.0, max(0.0, pct))
+            speed = float(d.get("speed") or 0.0)
+            eta = int(d.get("eta") or 0)
+
+            now = time.monotonic()
+            if now - self._last_progress_emit_time >= 0.1:
+                self._last_progress_emit_time = now
+                progress = TaskProgress(
+                    task_id=self.task_id,
+                    downloaded_bytes=downloaded,
+                    total_bytes=total,
+                    percentage=round(pct, 1),
+                    speed_bytes_sec=speed,
+                    speed_str=format_speed(speed),
+                    eta_seconds=eta,
+                    eta_str=format_eta(eta),
+                )
+                self.progress_updated.emit(progress)
+
+        elif status == "finished":
+            total = d.get("total_bytes") or d.get("downloaded_bytes") or 0
+            progress = TaskProgress(
+                task_id=self.task_id,
+                downloaded_bytes=total,
+                total_bytes=total,
+                percentage=100.0,
+                speed_bytes_sec=0.0,
+                speed_str="0.0 KB/s",
+                eta_seconds=0,
+                eta_str="00:00:00",
+            )
+            self.progress_updated.emit(progress)
+
+    def _cleanup_partial_files(self) -> None:
+        """취소 또는 실패 시 생성된 파트(.part) 및 임시 파일들을 안전하게 정리합니다."""
+        try:
+            target_path = Path(self.task_spec.save_path)
+            parent_dir = target_path.parent
+            if parent_dir.exists():
+                escaped_stem = glob.escape(target_path.stem)
+                for p in parent_dir.glob(f"{escaped_stem}*.part*"):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                for p in parent_dir.glob(f"{escaped_stem}*.ytdl*"):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+
+    def run(self) -> None:
+        """yt-dlp 인스턴스를 구동하여 비디오를 다운로드합니다."""
+        import yt_dlp
+
+        if self._is_cancelled:
+            self.download_stopped.emit(self.task_id)
+            return
+
+        try:
+            self._ydl_opts = build_vod_download_opts(self.task_spec)
+            self._ydl_opts["progress_hooks"] = [self._progress_hook]
+
+            with yt_dlp.YoutubeDL(cast(Any, self._ydl_opts)) as ydl:
+                ydl.download([self.task_spec.video_url])
+
+            if self._is_cancelled:
+                self._cleanup_partial_files()
+                self.download_stopped.emit(self.task_id)
+                return
+
+            target_path = Path(self.task_spec.save_path)
+            final_path = target_path
+            if not target_path.exists():
+                # 리먹싱 등으로 인해 확장자 또는 포맷이 변경되었을 가능성 확인
+                escaped_stem = glob.escape(target_path.stem)
+                candidates = list(target_path.parent.glob(f"{escaped_stem}.*"))
+                valid = [
+                    c
+                    for c in candidates
+                    if not c.name.endswith(".part") and not c.name.endswith(".ytdl")
+                ]
+                if valid:
+                    final_path = valid[0]
+
+            if not final_path.exists():
+                raise FileNotFoundError(
+                    f"다운로드 대상 파일이 디스크에 생성되지 않았습니다: {final_path}"
+                )
+
+            self.download_finished.emit(self.task_id, str(final_path))
+
+        except DownloadCancelledError:
+            self._cleanup_partial_files()
+            self.download_stopped.emit(self.task_id)
+        except Exception as e:
+            if self._is_cancelled:
+                self._cleanup_partial_files()
+                self.download_stopped.emit(self.task_id)
+            else:
+                self.download_failed.emit(
+                    self.task_id,
+                    type(e).__name__,
+                    str(e),
+                    traceback.format_exc(),
+                )

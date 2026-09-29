@@ -122,8 +122,10 @@ def test_defect4_reorder_race_condition_no_negative_index() -> None:
 
     mgr._queue.reorder = race_hook  # type: ignore
 
-    mgr.reorder_task("B", 0)
+    ok = mgr.reorder_task("B", 0)
 
+    assert ok is False
+    assert len(reordered_signals) == 0
     for _tid, old_i, new_i in reordered_signals:
         assert old_i >= 0
         assert new_i >= 0

@@ -1,7 +1,6 @@
 """다운로드 작업 카드(Task Card) 위젯 모듈."""
 
 import urllib.request
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +25,12 @@ from chzzk_downloader.core.filename_generator import (
     resolve_duplicate_filename,
 )
 from chzzk_downloader.core.settings_manager import get_current_settings
+from chzzk_downloader.core.task_models import TaskProgress, TaskSpec, TaskStatus
 from chzzk_downloader.core.url_parser import parse_chzzk_vod_url
 from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
+
+_DETACHED_LOADERS: set[QThread] = set()
 
 
 def match_default_quality(available_qualities: list[str], target_quality: str) -> str:
@@ -66,18 +68,6 @@ def match_default_quality(available_qualities: list[str], target_quality: str) -
         pass
 
     return available_qualities[0]
-
-
-class TaskStatus(Enum):
-    """작업 카드 상태 열거형."""
-
-    ANALYZING = "ANALYZING"
-    READY = "READY"
-    DOWNLOADING = "DOWNLOADING"
-    STOPPED = "STOPPED"
-    FAILED_INVALID = "FAILED_INVALID"
-    FAILED_LOGIN_REQUIRED = "FAILED_LOGIN_REQUIRED"
-    FAILED_DOWNLOAD = "FAILED_DOWNLOAD"
 
 
 class SpinnerWidget(QWidget):
@@ -167,6 +157,8 @@ class TaskCardWidget(QFrame):
     download_started = pyqtSignal()
     download_stopped = pyqtSignal()
     download_blocked = pyqtSignal(str)
+    request_start_download = pyqtSignal(object)  # (TaskSpec)
+    request_stop_download = pyqtSignal(str)  # (task_id)
 
     def __init__(
         self,
@@ -174,6 +166,7 @@ class TaskCardWidget(QFrame):
         status: TaskStatus = TaskStatus.ANALYZING,
         vod_info: VodInfo | None = None,
         video_no: str = "",
+        task_id: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -185,9 +178,15 @@ class TaskCardWidget(QFrame):
             or (vod_info.video_no if vod_info else "")
             or (parse_chzzk_vod_url(raw_url) or "")
         )
+        self.task_id = task_id or self.video_no or self.raw_url
+        self.waiting_position: int = 0
         self.error_message: str = ""
+        self.error_type: str = ""
+        self.traceback_str: str = ""
+        self.final_file_path: Path | None = None
         self.is_deleted: bool = False
         self._thumb_loader: ThumbnailLoaderThread | None = None
+        self._info_win: Any = None
 
         self.custom_download_dir: Path | None = None
         self.target_path: Path | None = None
@@ -232,7 +231,7 @@ class TaskCardWidget(QFrame):
         # 상단 행: 1번 위치(좌상단 타이틀) + 2번 위치(우상단 액션 아이콘)
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(8)
+        top_row.setSpacing(4)
 
         # 1번 위치 (좌상단): 작업명 / 상태 표시 라벨 (좌측 정렬 줄바꿈 지원)
         self.title_label = QLabel(self)
@@ -244,7 +243,34 @@ class TaskCardWidget(QFrame):
         self.title_label.setStyleSheet("font-size: 13px; font-weight: 600;")
         top_row.addWidget(self.title_label, stretch=1)
 
-        # 2번 위치 (우상단): 회색조 액션 아이콘 그룹 (삭제 ✕ 버튼)
+        # 2번 위치 (우상단): 회색조 액션 아이콘 그룹 (호버 시 노출)
+        # 2-1. 폴더 열기(📁) 버튼
+        self.open_folder_btn = QPushButton("📁", self)
+        self.open_folder_btn.setToolTip("폴더 열기")
+        self.open_folder_btn.setFixedSize(24, 24)
+        self.open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_folder_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #888888; border: none; font-size: 13px; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.15); color: white; border-radius: 3px; }"
+        )
+        self.open_folder_btn.clicked.connect(self.open_folder)
+        self.open_folder_btn.hide()
+        top_row.addWidget(self.open_folder_btn)
+
+        # 2-2. 파일 재생(▶) 버튼
+        self.play_btn = QPushButton("▶", self)
+        self.play_btn.setToolTip("재생")
+        self.play_btn.setFixedSize(24, 24)
+        self.play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.play_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #00ffa3; border: none; font-size: 12px; font-weight: bold; }"
+            "QPushButton:hover { background-color: rgba(0, 255, 163, 0.2); border-radius: 3px; }"
+        )
+        self.play_btn.clicked.connect(self.play_media)
+        self.play_btn.hide()
+        top_row.addWidget(self.play_btn)
+
+        # 2-3. 삭제(✕) 버튼
         self.delete_btn = QPushButton("✕", self)
         self.delete_btn.setToolTip("목록에서 제거")
         self.delete_btn.setFixedSize(24, 24)
@@ -424,49 +450,76 @@ class TaskCardWidget(QFrame):
         info_layout.addLayout(bottom_row)
         main_layout.addLayout(info_layout, stretch=1)
 
+    def _show_hover_toolbar(self, visible: bool) -> None:
+        """2번 위치 우상단 호버 툴바 버튼들의 가시성을 상태에 따라 제어합니다."""
+        if visible:
+            if self.status == TaskStatus.COMPLETED:
+                self.open_folder_btn.show()
+                self.play_btn.show()
+                self.delete_btn.show()
+            else:
+                self.open_folder_btn.hide()
+                self.play_btn.hide()
+                self.delete_btn.show()
+        else:
+            self.open_folder_btn.hide()
+            self.play_btn.hide()
+            self.delete_btn.hide()
+
     def enterEvent(self, event: QEnterEvent | None) -> None:  # noqa: N802
         super().enterEvent(event)
-        self.delete_btn.show()
+        self._show_hover_toolbar(True)
 
     def leaveEvent(self, event: QEvent | None) -> None:  # noqa: N802
         super().leaveEvent(event)
-        self.delete_btn.hide()
+        self._show_hover_toolbar(False)
+
+    def _detach_thumb_loader(self) -> None:
+        """실행 중인 썸네일 로더 스레드를 안전하게 분리하여 백그라운드 종료를 대기하도록 보존합니다."""
+        if self._thumb_loader is not None:
+            if self._thumb_loader.isRunning():
+                try:
+                    self._thumb_loader.loaded.disconnect()
+                except Exception:
+                    pass
+                loader = self._thumb_loader
+                loader.setParent(None)
+                _DETACHED_LOADERS.add(loader)
+                loader.finished.connect(
+                    lambda ref=loader: _DETACHED_LOADERS.discard(ref)
+                )
+                loader.finished.connect(loader.deleteLater)
+                loader.quit()
+            self._thumb_loader = None
+
+    def close_info_window(self) -> None:
+        """이 카드가 소유한 TaskInfoWindow를 안전하게 닫고 정리합니다."""
+        from PyQt6 import sip
+
+        if hasattr(self, "_info_win") and self._info_win is not None:
+            if not sip.isdeleted(self._info_win):
+                self._info_win.close()
+            self._info_win = None
 
     def deleteLater(self) -> None:  # noqa: N802
         self.is_deleted = True
+        self.close_info_window()
         self.spinner.stop()
-        if self._thumb_loader is not None and self._thumb_loader.isRunning():
-            try:
-                self._thumb_loader.loaded.disconnect()
-            except Exception:
-                pass
-            self._thumb_loader.quit()
-            self._thumb_loader.wait()
+        self._detach_thumb_loader()
         super().deleteLater()
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         self.is_deleted = True
+        self.close_info_window()
         self.spinner.stop()
-        if self._thumb_loader is not None and self._thumb_loader.isRunning():
-            try:
-                self._thumb_loader.loaded.disconnect()
-            except Exception:
-                pass
-            self._thumb_loader.quit()
-            self._thumb_loader.wait()
+        self._detach_thumb_loader()
         super().closeEvent(event)
 
     def _load_thumbnail(self, url: str) -> None:
         """비동기로 썸네일 이미지를 다운로드하여 라벨에 표시합니다."""
         if not url or self.is_deleted:
             return
-        if self._thumb_loader is not None and self._thumb_loader.isRunning():
-            try:
-                self._thumb_loader.loaded.disconnect()
-            except Exception:
-                pass
-            self._thumb_loader.quit()
-            self._thumb_loader.wait()
+        self._detach_thumb_loader()
         self._thumb_loader = ThumbnailLoaderThread(url, parent=self)
         self._thumb_loader.loaded.connect(self._on_thumbnail_loaded)
         self._thumb_loader.start()
@@ -571,8 +624,151 @@ class TaskCardWidget(QFrame):
             return "rename"
         return "cancel"
 
+    def get_task_spec(self) -> TaskSpec:
+        """이 카드의 다운로드 실행 명세(TaskSpec)를 불변 객체로 생성하여 반환합니다."""
+        settings = get_current_settings()
+        ext = (
+            self.ext_combo.currentText()
+            if hasattr(self, "ext_combo") and self.ext_combo.currentText()
+            else settings.file_extension
+        )
+        quality = (
+            self.selected_quality
+            or (
+                self.quality_combo.currentText()
+                if hasattr(self, "quality_combo")
+                else ""
+            )
+            or settings.default_quality
+        )
+        save_dir = self.custom_download_dir or settings.download_dir
+        if self.vod_info:
+            filename = generate_vod_filename(self.vod_info, ext=ext)
+            target = save_dir / filename
+        else:
+            target = save_dir
+
+        return TaskSpec(
+            task_id=self.task_id,
+            video_url=self.raw_url,
+            is_live=False,
+            title=self.vod_info.video_title if self.vod_info else "",
+            streamer=self.vod_info.channel_name if self.vod_info else "",
+            selected_quality=quality,
+            selected_ext=ext,
+            save_path=self.target_path or target,
+        )
+
+    def set_task_status(self, status: TaskStatus) -> None:
+        """외부(TaskManager)로부터 상태 전이를 수신하여 카드를 갱신합니다."""
+        if self.status == status:
+            return
+        self.status = status
+        self._update_display()
+        self._apply_style()
+        if self.underMouse():
+            self._show_hover_toolbar(True)
+        if status == TaskStatus.DOWNLOADING:
+            self.download_started.emit()
+        elif status == TaskStatus.STOPPED:
+            self.download_stopped.emit()
+
+    def set_completed(self, final_file_path: str | Path) -> None:
+        """다운로드 완료 시 호출되어 최종 파일 경로를 보존하고 COMPLETED 상태로 전이합니다."""
+        if final_file_path and str(final_file_path).strip():
+            self.final_file_path = Path(final_file_path)
+        else:
+            self.final_file_path = None
+        self.set_task_status(TaskStatus.COMPLETED)
+        if self.underMouse():
+            self._show_hover_toolbar(True)
+
+    def open_folder(self) -> None:
+        """📁 폴더 열기: 탐색기를 열고 해당 파일을 선택(하이라이트)하거나 폴더를 엽니다."""
+        if (
+            not self.final_file_path
+            or str(self.final_file_path).strip() in ("", ".")
+            or not self.final_file_path.is_file()
+        ):
+            main_win = self.window()
+            if hasattr(main_win, "toast") and hasattr(main_win.toast, "show_toast"):
+                from chzzk_downloader.gui.toast import ToastType
+
+                main_win.toast.show_toast(
+                    f"파일을 찾을 수 없습니다: {self.final_file_path or ''}",
+                    ToastType.WARNING,
+                )
+            return
+
+        import subprocess
+        import sys
+
+        if sys.platform == "win32":
+            try:
+                subprocess.Popen(f'explorer /select,"{self.final_file_path}"')
+                return
+            except Exception:
+                pass
+
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.final_file_path.parent)))
+
+    def play_media(self) -> None:
+        """▶ 영상 재생: 시스템 기본 미디어 플레이어로 다운로드된 비디오를 실행합니다."""
+        if (
+            not self.final_file_path
+            or str(self.final_file_path).strip() in ("", ".")
+            or not self.final_file_path.is_file()
+        ):
+            main_win = self.window()
+            if hasattr(main_win, "toast") and hasattr(main_win.toast, "show_toast"):
+                from chzzk_downloader.gui.toast import ToastType
+
+                main_win.toast.show_toast(
+                    f"파일을 찾을 수 없습니다: {self.final_file_path or ''}",
+                    ToastType.WARNING,
+                )
+            return
+
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.final_file_path)))
+
+    def set_waiting_position(self, position: int) -> None:
+        """대기 순번을 갱신합니다 (음수/0은 대기 중... 기본 문구 유지)."""
+        self.waiting_position = position if position > 0 else 0
+        if self.status == TaskStatus.QUEUED:
+            self.status_label.show()
+            if self.waiting_position > 0:
+                self.status_label.setText(
+                    f"대기 중 (대기 순번: {self.waiting_position}번)"
+                )
+            else:
+                self.status_label.setText("대기 중...")
+
+    def update_progress(self, progress: TaskProgress) -> None:
+        """다운로드 진행 상황(3번 위치: 퍼센트, 속도, ETA)을 실시간으로 갱신합니다."""
+        if self.status != TaskStatus.DOWNLOADING:
+            return
+        self.status_label.show()
+        parts: list[str] = []
+        if progress.percentage > 0 or progress.downloaded_bytes > 0:
+            parts.append(f"{progress.percentage:.1f}%")
+        if progress.speed_str:
+            parts.append(progress.speed_str)
+        if progress.eta_str and progress.eta_seconds > 0:
+            parts.append(f"ETA {progress.eta_str}")
+
+        if parts:
+            self.status_label.setText(" | ".join(parts))
+
     def trigger_start_download(self) -> bool:
-        """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 상태로 진입합니다."""
+        """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 또는 QUEUED 상태 진입을 요청합니다."""
+        if self.status != TaskStatus.READY:
+            return False
         if not self.vod_info:
             return False
 
@@ -616,9 +812,15 @@ class TaskCardWidget(QFrame):
         if self.quality_combo.currentText():
             self.selected_quality = self.quality_combo.currentText()
 
-        self.status = TaskStatus.DOWNLOADING
-        self._update_display()
-        self.download_started.emit()
+        spec = self.get_task_spec()
+        self.request_start_download.emit(spec)
+
+        # MainWindow와 연결되어 있지 않은 독립 위젯 상태이거나,
+        # request_start_download 시그널에 의해 status가 변경되지 않은 경우 기본 전이
+        if self.status == TaskStatus.READY:
+            self.status = TaskStatus.DOWNLOADING
+            self._update_display()
+            self.download_started.emit()
         return True
 
     def _confirm_stop_dialog(self) -> bool:
@@ -630,23 +832,30 @@ class TaskCardWidget(QFrame):
 
     def trigger_stop_download(self) -> bool:
         """다운로드 중지 트리거: 확인 모달 승인 시 안전 중단 및 완결(STOPPED) 상태로 전이."""
+        if self.status not in (TaskStatus.DOWNLOADING, TaskStatus.QUEUED):
+            return False
         if not self._confirm_stop_dialog():
             return False
 
-        # 중지된 후에는 완결된 작업으로 처리되어 4번 위치에 대기 컨트롤이 나타나지 않음
-        self.status = TaskStatus.STOPPED
-        self._update_display()
-        self.download_stopped.emit()
+        self.request_stop_download.emit(self.task_id)
+
+        if self.status != TaskStatus.STOPPED:
+            self.status = TaskStatus.STOPPED
+            self._update_display()
+            self._apply_style()
+            self.download_stopped.emit()
         return True
 
     def reset_for_redownload(self) -> None:
         """동일 VOD 재입력 시 이전 세션 리소스 정리 및 클린 리셋 (충돌 방어 및 최신 설정 반영)."""
-        if self.status in (TaskStatus.DOWNLOADING, TaskStatus.STOPPED):
-            self.status = TaskStatus.READY
         self.error_message = ""
+        self.error_type = ""
+        self.traceback_str = ""
+        self.final_file_path = None
         self.selected_quality = ""
         self.custom_download_dir = None
         self.target_path = None
+        self.waiting_position = 0
         self.quality_combo.blockSignals(True)
         self.quality_combo.clear()
         self.quality_combo.blockSignals(False)
@@ -690,6 +899,38 @@ class TaskCardWidget(QFrame):
             self.spinner.stop()
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("VOD")
+
+        elif self.status == TaskStatus.QUEUED:
+            self.status_label.show()
+            pos_text = (
+                f" (대기 순번: {self.waiting_position}번)"
+                if self.waiting_position > 0
+                else ""
+            )
+            self.status_label.setText(f"대기 중{pos_text}")
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
+            self.auth_container.hide()
+            self.ready_container.hide()
+            self.downloading_container.hide()
+            self.spinner.stop()
+            if not (self.vod_info and self.vod_info.thumbnail_url):
+                self.thumb_label.setText("대기")
+
+        elif self.status == TaskStatus.COMPLETED:
+            self.status_label.show()
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
+                dur_str = format_duration(self.vod_info.duration)
+                self.status_label.setText(f"완료 ({dur_str})")
+            else:
+                self.status_label.setText("완료")
+            self.auth_container.hide()
+            self.ready_container.hide()
+            self.downloading_container.hide()
+            self.spinner.stop()
+            if not (self.vod_info and self.vod_info.thumbnail_url):
+                self.thumb_label.setText("완료")
 
         elif self.status == TaskStatus.DOWNLOADING:
             self.status_label.show()
@@ -844,6 +1085,8 @@ class TaskCardWidget(QFrame):
         self.status = TaskStatus.READY
         self.vod_info = info
         self.video_no = info.video_no or self.video_no
+        if info.video_no:
+            self.task_id = info.video_no
         self._populate_qualities(force_default=True)
         # 설정의 기본 확장자 반영
         settings = get_current_settings()
@@ -856,10 +1099,18 @@ class TaskCardWidget(QFrame):
         if info.thumbnail_url:
             self._load_thumbnail(info.thumbnail_url)
 
-    def set_failed(self, status: TaskStatus, error_message: str = "") -> None:
-        """분석 실패 또는 오류 상태로 카드를 갱신하고 빨간색 하이라이트를 적용합니다."""
+    def set_failed(
+        self,
+        status: TaskStatus,
+        error_message: str = "",
+        error_type: str = "",
+        traceback_str: str = "",
+    ) -> None:
+        """분석 실패 또는 오류 상태로 카드를 갱신하고 에러 상세를 보존합니다."""
         self.status = status
         self.error_message = error_message
+        self.error_type = error_type
+        self.traceback_str = traceback_str
         self._update_display()
         self._apply_style()
 
@@ -878,15 +1129,19 @@ class TaskCardWidget(QFrame):
 
     def open_task_info_window(self) -> None:
         """작업 정보 비모달 윈도우를 엽니다 (최소화/최대화 가능, 메인 창 조작 영향 없음)."""
+        from PyQt6 import sip
+
         from chzzk_downloader.gui.task_info_window import TaskInfoWindow
 
         if (
             not hasattr(self, "_info_win")
             or self._info_win is None
-            or not self._info_win.isVisible()
+            or sip.isdeleted(self._info_win)
         ):
             self._info_win = TaskInfoWindow(self)
             self._info_win.show()
         else:
+            self._info_win.refresh_info()
+            self._info_win.show()
             self._info_win.activateWindow()
             self._info_win.raise_()

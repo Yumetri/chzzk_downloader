@@ -159,6 +159,7 @@ class TaskManager:
 
             self._running_vod_ids.discard(task_id)
             self._running_live_ids.discard(task_id)
+            self._last_progress_time.pop(task_id, None)
             old_status = self._statuses.get(task_id)
             self._statuses[task_id] = TaskStatus.COMPLETED
 
@@ -191,7 +192,20 @@ class TaskManager:
         err_lower = (err_type + " " + msg).lower()
 
         # 세분화된 실패 상태 매핑
-        if any(k in err_lower for k in ("login", "adult", "성인", "로그인", "인증")):
+        if any(
+            k in err_lower
+            for k in (
+                "login",
+                "adult",
+                "성인",
+                "로그인",
+                "인증",
+                "401",
+                "403",
+                "unauthorized",
+                "forbidden",
+            )
+        ):
             new_status = TaskStatus.FAILED_LOGIN_REQUIRED
         elif any(
             k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")
@@ -208,6 +222,7 @@ class TaskManager:
 
             self._running_vod_ids.discard(task_id)
             self._running_live_ids.discard(task_id)
+            self._last_progress_time.pop(task_id, None)
             old_status = self._statuses.get(task_id)
             self._statuses[task_id] = new_status
 
@@ -237,6 +252,7 @@ class TaskManager:
 
             self._running_vod_ids.discard(task_id)
             self._running_live_ids.discard(task_id)
+            self._last_progress_time.pop(task_id, None)
             old_status = self._statuses.get(task_id)
             self._statuses[task_id] = TaskStatus.STOPPED
 
@@ -266,10 +282,7 @@ class TaskManager:
                 return
 
             last_time = self._last_progress_time.get(task_id, 0.0)
-            is_completed = progress.percentage >= 100.0
-            if not is_completed and (
-                now - last_time < self.progress_throttle_interval_sec
-            ):
+            if now - last_time < self.progress_throttle_interval_sec:
                 return
             self._last_progress_time[task_id] = now
 
