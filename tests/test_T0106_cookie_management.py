@@ -315,8 +315,11 @@ def test_main_window_auto_reanalyze_failed_login_cards_on_cookie_update(
         # T02 토스트는 침묵(미노출) 처리되고 백그라운드에서 자동 재분석 진행
         assert main_window.toast.isHidden() is True
 
-        # 카드가 ANALYZING을 거쳐 READY 상태로 전환되는지 대기
-        qtbot.waitUntil(lambda: card.status == TaskStatus.READY, timeout=2000)
+        # 카드가 ANALYZING을 거쳐 재분석 성공(READY 또는 자동 다운로드 활성화 시 DOWNLOADING) 상태로 전환되는지 대기
+        qtbot.waitUntil(
+            lambda: card.status in (TaskStatus.READY, TaskStatus.DOWNLOADING),
+            timeout=2000,
+        )
         assert card.title_label.text() == "[스트리머D] 2024-05-06 성인 인증 완료 방송"
 
 

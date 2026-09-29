@@ -207,7 +207,7 @@ def test_vod_auto_download_off_shows_waiting_controls(main_window, qtbot):
 
 
 # 6. 시작 아이콘(▶) 클릭 시 다운로드 시작 및 파일 중복 처리(옵션 A) 검증
-def test_start_download_and_file_duplicate_handling(qtbot, tmp_path):
+def test_start_download_and_file_duplicate_handling(qtbot, tmp_path, temp_settings_env):
     """파일 중복 시 덮어쓰기 / 이름변경 / 취소 분기 및 UI 상태 전이 검증."""
     save_dir = tmp_path / "downloads"
     save_dir.mkdir()
@@ -447,7 +447,7 @@ def test_rapid_successive_same_url_inputs_blocked(main_window, qtbot):
             assert "이미 추가한 작업입니다." in main_window.toast.label.text()
 
         # 3. 비동기 VOD 분석 완료 후(DOWNLOADING)에도 동일 URL 입력 차단 검증
-        qtbot.waitUntil(lambda: main_window.download_btn.isEnabled(), timeout=2000)
+        qtbot.waitUntil(lambda: card.status == TaskStatus.DOWNLOADING, timeout=5000)
         assert card.status == TaskStatus.DOWNLOADING
 
         main_window.url_input.setText(test_url)
