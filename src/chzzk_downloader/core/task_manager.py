@@ -282,10 +282,7 @@ class TaskManager:
                 return
 
             last_time = self._last_progress_time.get(task_id, 0.0)
-            is_completed = progress.percentage >= 100.0
-            if not is_completed and (
-                now - last_time < self.progress_throttle_interval_sec
-            ):
+            if now - last_time < self.progress_throttle_interval_sec:
                 return
             self._last_progress_time[task_id] = now
 

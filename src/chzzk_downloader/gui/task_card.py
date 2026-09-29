@@ -490,14 +490,25 @@ class TaskCardWidget(QFrame):
                 loader.quit()
             self._thumb_loader = None
 
+    def close_info_window(self) -> None:
+        """이 카드가 소유한 TaskInfoWindow를 안전하게 닫고 정리합니다."""
+        from PyQt6 import sip
+
+        if hasattr(self, "_info_win") and self._info_win is not None:
+            if not sip.isdeleted(self._info_win):
+                self._info_win.close()
+            self._info_win = None
+
     def deleteLater(self) -> None:  # noqa: N802
         self.is_deleted = True
+        self.close_info_window()
         self.spinner.stop()
         self._detach_thumb_loader()
         super().deleteLater()
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         self.is_deleted = True
+        self.close_info_window()
         self.spinner.stop()
         self._detach_thumb_loader()
         super().closeEvent(event)

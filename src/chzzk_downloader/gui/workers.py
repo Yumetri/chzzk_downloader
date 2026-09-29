@@ -150,7 +150,7 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
 
     # 화질 선택 포맷 문자열
     quality = task_spec.selected_quality
-    if quality and quality != "best":
+    if quality and quality.lower() not in ("best", "최고 화질", "최고화질"):
         format_str = (
             f"bestvideo[format_id*={quality}]+bestaudio/best[format_id*={quality}]/bestvideo+bestaudio/best"
         )
@@ -171,9 +171,10 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
         "ALL",
     ]
 
+    escaped_stem = save_path.stem.replace("%", "%%")
     opts: dict[str, Any] = {
         "format": format_str,
-        "outtmpl": {"default": str(save_dir / f"{save_path.stem}.%(ext)s")},
+        "outtmpl": {"default": str(save_dir / f"{escaped_stem}.%(ext)s")},
         "remuxvideo": ext,
         "postprocessors": [
             {
@@ -236,6 +237,7 @@ class VodDownloadWorker(QThread):
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes") or 0
             pct = (downloaded / total * 100.0) if total > 0 else 0.0
+            pct = min(100.0, max(0.0, pct))
             speed = float(d.get("speed") or 0.0)
             eta = int(d.get("eta") or 0)
 

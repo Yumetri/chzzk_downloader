@@ -114,6 +114,8 @@ class TaskListWidget(QWidget):
         """작업 카드를 UI 목록에서 안전하게 제거합니다."""
         if card.is_deleted or sip.isdeleted(card):
             return
+        if hasattr(card, "close_info_window"):
+            card.close_info_window()
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
             if item is not None and self.list_widget.itemWidget(item) is card:
@@ -704,6 +706,9 @@ class MainWindow(QMainWindow):
 
     def _start_vod_download(self, task_id: str) -> None:
         """DOWNLOADING 상태인 작업에 대해 백그라운드 VodDownloadWorker를 구동합니다."""
+        if self.task_manager.get_task_status(task_id) != TaskStatus.DOWNLOADING:
+            return
+
         existing_worker = self._download_workers.get(task_id)
         if existing_worker is not None and existing_worker.isRunning():
             return
@@ -790,6 +795,10 @@ class MainWindow(QMainWindow):
         self, task_id: str, old_status: TaskStatus, new_status: TaskStatus
     ) -> None:
         """TaskManager로부터 상태 전이 알림을 수신하여 해당 카드 UI를 갱신합니다."""
+        current_status = self.task_manager.get_task_status(task_id)
+        if current_status != new_status:
+            return
+
         card = self.task_list_widget.find_task_card_by_id(task_id)
         if card is not None and not card.is_deleted and not sip.isdeleted(card):
             card.set_task_status(new_status)
@@ -798,6 +807,10 @@ class MainWindow(QMainWindow):
                 card.set_waiting_position(pos)
         if new_status == TaskStatus.DOWNLOADING:
             self._start_vod_download(task_id)
+        elif new_status == TaskStatus.STOPPED:
+            worker = self._download_workers.pop(task_id, None)
+            if worker is not None:
+                self._detach_download_worker(worker)
 
     def _on_task_completed(self, task_id: str, final_file_path: str) -> None:
         """TaskManager로부터 작업 완료 알림을 수신하여 카드를 완료 처리하고 완료 토스트를 노출합니다."""
