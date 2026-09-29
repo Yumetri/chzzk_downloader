@@ -8,6 +8,7 @@
 ## 1. 프로젝트 개요 & 핵심 스택
 
 - **목적**: 치지직(Chzzk) 실시간 방송 녹화 및 VOD 다운로드 고신뢰성 데스크톱 GUI 애플리케이션 (Hitomi Downloader 아키텍처 벤치마킹)
+- **현재 구현 스코프**: **치지직 VOD 다운로드 전용** (URL 파싱, 메타데이터 추출, 최고화질 다운로드, fMP4/FFmpeg Muxing, 네이버 쿠키 세션). *실시간 라이브 자동 녹화 및 채널 감시 폴링은 향후 로드맵 항목입니다.*
 - **주요 런타임 스택**:
   - **언어/런타임**: Python >= 3.12, [uv](https://docs.astral.sh/uv/) (Hatchling 빌드 백엔드)
   - **GUI 프레임워크**: PyQt6 (6.7+), PyQt6-WebEngine (네이버 웹뷰 로그인)
@@ -21,14 +22,13 @@
 ### 2.1 디렉터리 레이아웃
 ```text
 chzzk_downloader/
+├── AGENTS.md                          # [SSOT 관제탑] AI 에이전트 개발 가이드 (아키텍처, 방어규칙, 파이프라인)
+├── readme.md                          # [사용자 대문] 프로젝트 소개, 주요 기능, 실행 방법
 ├── .github/workflows/ci.yml           # CI 파이프라인 (Lint, Type Check, Xvfb Test)
-├── docs/                              # 아키텍처 명세 및 가이드라인 (SSOT)
-│   ├── AI_DEVELOPMENT_GUIDELINES.md   # 메인 개발 에이전트 시스템 프롬프트
-│   ├── AI_ADVERSARIAL_VALIDATOR_GUIDE.md # 무맥락 적대적 검증 가이드 (A~L 체크리스트)
-│   ├── DOWNLOADER_GUI_ARCHITECTURE.md # 4계층 아키텍처 명세서
-│   ├── HITOMI_CHZZK_FEATURE_DESIGN_SPEC.md # 치지직 기능 및 환경설정 상세 규격
-│   ├── PAIR_CODING_WORKFLOW.md        # 페어코딩 방식 및 UI 피드백 동기화 규칙
-│   └── UI_FEEDBACK_CATALOG.md         # M01~M10, T01~T08, C01~C09 전수 카탈로그
+├── docs/                              # 공식 참조 규격서 (On-demand 포인터)
+│   ├── UI_FEEDBACK_CATALOG.md         # UI 피드백 SSOT (M01~M10, T01~T08, C01~C09 전수 카탈로그)
+│   ├── AI_ADVERSARIAL_VALIDATOR_GUIDE.md # 서브에이전트 적대적 검증 독립 프롬프트 (A~L 체크리스트)
+│   └── HITOMI_CHZZK_FEATURE_DESIGN_SPEC.md # 치지직 도메인/설정 스펙 및 로드맵 기획서
 ├── src/chzzk_downloader/
 │   ├── config.py                      # 전역 상수, URL 엔드포인트, 기본 경로
 │   ├── main.py                        # QApplication 진입점
@@ -50,8 +50,8 @@ chzzk_downloader/
 | **core** | `ytdlp.py` | yt-dlp 래퍼 (VOD 스트림/포맷 추출, 외부 API 격리) |
 | **core** | `ffmpeg_manager.py` | FFmpeg/FFprobe 6단계 자동 탐색/온디맨드 부트스트랩 및 버전 프로빙 |
 | **core** | `cookie_manager.py` | Netscape 쿠키 저장, 파싱, 네이버 세션 유효성 검증 |
-| **core** | `settings_manager.py`| JSON 환경설정 영속화 및 기본값 복구 |
-| **core** | `url_parser.py` | 치지직 VOD/Live URL 정규식 검증 및 VOD ID 파싱 |
+| **core** | `settings_manager.py`| `AppSettings` JSON 영속화 (6대 필드: `download_dir`, `default_quality`, `file_extension`, `vod_auto_download`, `ffmpeg_path`, `ffprobe_path`) |
+| **core** | `url_parser.py` | 치지직 VOD URL 정규식 검증 및 VOD ID 파싱 |
 | **gui** | `main_window.py` | 메인 윈도우, URL 입력바, 작업 카드 목록 스크롤, 전역 워커 Teardown 수명 관리 |
 | **gui** | `task_card.py` | 개별 작업 카드 (C01~C09 9대 상태 렌더링, 액션 툴바, 치지직 뱃지, 진단창 연동) |
 | **gui** | `task_info_window.py`| 작업 상세 오류 및 진단 정보를 제공하는 비모달(Modeless) 팝업 창 |
