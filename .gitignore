@@ -24,3 +24,5 @@ htmlcov/
 Thumbs.db
 Desktop.ini
 
+# Generated Architecture & Diff Reports (Untracked)
+reports/
