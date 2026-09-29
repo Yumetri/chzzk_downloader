@@ -32,7 +32,9 @@ def sample_vod_info():
     )
 
 
-def test_task_completed_sets_final_file_path_and_shows_toast(app, sample_vod_info, tmp_path):
+def test_task_completed_sets_final_file_path_and_shows_toast(
+    app, sample_vod_info, tmp_path
+):
     """다운로드 완료 시 카드의 final_file_path 저장 및 완료 성공 토스트(T08) 노출 검증."""
     window = MainWindow()
     card = TaskCardWidget(
@@ -79,7 +81,9 @@ def test_completed_card_hover_toolbar_buttons_exist(app, sample_vod_info, tmp_pa
     fake_file.write_bytes(b"dummy")
     card.set_completed(fake_file)
 
-    assert hasattr(card, "open_folder_btn"), "완료 상태용 open_folder_btn(📁)이 없습니다."
+    assert hasattr(card, "open_folder_btn"), (
+        "완료 상태용 open_folder_btn(📁)이 없습니다."
+    )
     assert hasattr(card, "play_btn"), "완료 상태용 play_btn(▶)이 없습니다."
     assert hasattr(card, "delete_btn"), "delete_btn(✕)이 없습니다."
 
@@ -106,8 +110,10 @@ def test_open_folder_action_with_existing_file(app, sample_vod_info, tmp_path):
     fake_file.write_bytes(b"dummy")
     card.set_completed(fake_file)
 
-    with patch("subprocess.Popen") as mock_popen, \
-         patch("PyQt6.QtGui.QDesktopServices.openUrl") as mock_open_url:
+    with (
+        patch("subprocess.Popen") as mock_popen,
+        patch("PyQt6.QtGui.QDesktopServices.openUrl") as mock_open_url,
+    ):
         card.open_folder()
         # Windows 탐색기 select 호출 또는 QDesktopServices 호출 확인
         assert mock_popen.called or mock_open_url.called
@@ -211,21 +217,40 @@ def test_task_failed_preserves_error_details_for_task_info_window(app, sample_vo
 def test_task_failed_toast_branches(app, sample_vod_info):
     """실패 사유별(성인/로그인 만료, 잘못된 URL, 일반 다운로드 실패) 토스트 분기 검증."""
     window = MainWindow()
-    c1 = TaskCardWidget("https://chzzk.naver.com/video/login_err", status=TaskStatus.READY, task_id="login_err", parent=window)
-    c2 = TaskCardWidget("https://chzzk.naver.com/video/invalid_err", status=TaskStatus.READY, task_id="invalid_err", parent=window)
-    c3 = TaskCardWidget("https://chzzk.naver.com/video/down_err", status=TaskStatus.READY, task_id="down_err", parent=window)
+    c1 = TaskCardWidget(
+        "https://chzzk.naver.com/video/login_err",
+        status=TaskStatus.READY,
+        task_id="login_err",
+        parent=window,
+    )
+    c2 = TaskCardWidget(
+        "https://chzzk.naver.com/video/invalid_err",
+        status=TaskStatus.READY,
+        task_id="invalid_err",
+        parent=window,
+    )
+    c3 = TaskCardWidget(
+        "https://chzzk.naver.com/video/down_err",
+        status=TaskStatus.READY,
+        task_id="down_err",
+        parent=window,
+    )
     for c in (c1, c2, c3):
         window.task_list_widget.add_task_card(c)
 
     # 1. 로그인/성인인증 필요 실패 ➔ T06 액션 토스트 노출
     with patch.object(window.toast, "show_action_toast") as mock_action_toast:
-        window._on_task_failed("login_err", "LoginRequiredError", "성인 인증이 필요한 영상입니다.", "")
+        window._on_task_failed(
+            "login_err", "LoginRequiredError", "성인 인증이 필요한 영상입니다.", ""
+        )
         mock_action_toast.assert_called_once()
         assert c1.status == TaskStatus.FAILED_LOGIN_REQUIRED
 
     # 2. 비공개/존재하지 않는 URL 실패 ➔ T04/T05 에러 토스트 노출
     with patch.object(window.toast, "show_toast") as mock_show_toast:
-        window._on_task_failed("invalid_err", "VodNotFoundError", "비공개 동영상입니다.", "")
+        window._on_task_failed(
+            "invalid_err", "VodNotFoundError", "비공개 동영상입니다.", ""
+        )
         mock_show_toast.assert_called_once()
         args, _ = mock_show_toast.call_args
         assert args[1] == ToastType.ERROR
@@ -251,7 +276,9 @@ def test_reset_for_redownload_clears_previous_session_file_and_error(app, tmp_pa
     fake_file = tmp_path / "old_video.mp4"
     fake_file.write_bytes(b"dummy")
     card.set_completed(fake_file)
-    card.set_failed(TaskStatus.FAILED_DOWNLOAD, "Old error", "OldErrType", "Old Traceback")
+    card.set_failed(
+        TaskStatus.FAILED_DOWNLOAD, "Old error", "OldErrType", "Old Traceback"
+    )
 
     assert card.final_file_path == fake_file
     assert card.error_type == "OldErrType"
@@ -261,7 +288,9 @@ def test_reset_for_redownload_clears_previous_session_file_and_error(app, tmp_pa
     card.reset_for_redownload()
 
     assert card.status == TaskStatus.ANALYZING
-    assert card.final_file_path is None, f"final_file_path leaked: {card.final_file_path}"
+    assert card.final_file_path is None, (
+        f"final_file_path leaked: {card.final_file_path}"
+    )
     assert card.error_type == "", f"error_type leaked: {card.error_type}"
     assert card.traceback_str == "", f"traceback_str leaked: {card.traceback_str}"
 
@@ -297,21 +326,29 @@ def test_task_info_window_reopen_and_close_event_cleanup(app):
 def test_open_folder_and_play_empty_path_defense(app):
     """[결함 3 검증] 빈 경로("") 또는 디렉토리 경로에 대해 탐색기/플레이어가 현재 폴더('.')로 실행되지 않고 방어 토스트 표시."""
     window = MainWindow()
-    card = TaskCardWidget("https://chzzk.naver.com/video/11111", status=TaskStatus.READY, parent=window)
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/11111", status=TaskStatus.READY, parent=window
+    )
     window.task_list_widget.add_task_card(card)
     card.set_completed("")  # 빈 경로 설정
 
-    with patch.object(window.toast, "show_toast") as mock_toast, \
-         patch("subprocess.Popen") as mock_popen, \
-         patch("PyQt6.QtGui.QDesktopServices.openUrl") as mock_open_url:
+    with (
+        patch.object(window.toast, "show_toast") as mock_toast,
+        patch("subprocess.Popen") as mock_popen,
+        patch("PyQt6.QtGui.QDesktopServices.openUrl") as mock_open_url,
+    ):
         card.open_folder()
-        assert not mock_popen.called, f"탐색기가 현재 작업 디렉토리('.')로 잘못 실행되었습니다: {mock_popen.call_args}"
+        assert not mock_popen.called, (
+            f"탐색기가 현재 작업 디렉토리('.')로 잘못 실행되었습니다: {mock_popen.call_args}"
+        )
         assert not mock_open_url.called
         mock_toast.assert_called_once()
         assert "찾을 수 없습니다" in mock_toast.call_args[0][0]
 
-    with patch.object(window.toast, "show_toast") as mock_toast, \
-         patch("PyQt6.QtGui.QDesktopServices.openUrl") as mock_open_url:
+    with (
+        patch.object(window.toast, "show_toast") as mock_toast,
+        patch("PyQt6.QtGui.QDesktopServices.openUrl") as mock_open_url,
+    ):
         card.play_media()
         assert not mock_open_url.called
         mock_toast.assert_called_once()
@@ -330,7 +367,16 @@ def test_cleanup_worker_deletes_qthread_object(app):
     from chzzk_downloader.gui.workers import VodDownloadWorker
 
     window = MainWindow()
-    spec = TaskSpec("task_1", "http://fake", False, "title", "streamer", "1080p", "mp4", Path("f.mp4"))
+    spec = TaskSpec(
+        "task_1",
+        "http://fake",
+        False,
+        "title",
+        "streamer",
+        "1080p",
+        "mp4",
+        Path("f.mp4"),
+    )
     worker = VodDownloadWorker(spec, parent=window)
     window._download_workers["task_1"] = worker
 
@@ -345,12 +391,19 @@ def test_cleanup_worker_deletes_qthread_object(app):
 def test_http_401_403_error_mapping_inconsistency(app):
     """[결함 5 검증] 다운로드 실패 시 HTTP 401/403/Forbidden 에러에 대해 FAILED_LOGIN_REQUIRED 및 액션 토스트 연동."""
     window = MainWindow()
-    card = TaskCardWidget("https://chzzk.naver.com/video/401401", status=TaskStatus.READY, task_id="401401", parent=window)
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/401401",
+        status=TaskStatus.READY,
+        task_id="401401",
+        parent=window,
+    )
     window.task_list_widget.add_task_card(card)
 
     with patch.object(window.toast, "show_action_toast") as mock_action_toast:
         # 실제 yt-dlp의 401 Unauthorized 에러 시뮬레이션
-        window._on_task_failed("401401", "HTTPError", "HTTP Error 401: Unauthorized", "")
+        window._on_task_failed(
+            "401401", "HTTPError", "HTTP Error 401: Unauthorized", ""
+        )
         assert card.status == TaskStatus.FAILED_LOGIN_REQUIRED, (
             f"HTTP 401 에러는 FAILED_LOGIN_REQUIRED여야 하나 {card.status}로 오분류되었습니다."
         )
@@ -365,10 +418,14 @@ def test_phantom_toast_on_nonexistent_or_deleted_task(app):
     with patch.object(window.toast, "show_toast") as mock_toast:
         # 삭제된 작업 ID에 대한 완료/실패 시그널 도달
         window._on_task_completed("deleted_task", "video.mp4")
-        assert not mock_toast.called, "삭제된 작업에 대해 완료 팬텀 토스트가 노출되었습니다."
+        assert not mock_toast.called, (
+            "삭제된 작업에 대해 완료 팬텀 토스트가 노출되었습니다."
+        )
 
         window._on_task_failed("deleted_task", "RuntimeError", "error msg", "")
-        assert not mock_toast.called, "삭제된 작업에 대해 실패 팬텀 토스트가 노출되었습니다."
+        assert not mock_toast.called, (
+            "삭제된 작업에 대해 실패 팬텀 토스트가 노출되었습니다."
+        )
 
     window.close()
 
@@ -377,7 +434,9 @@ def test_hover_toolbar_auto_sync_on_status_change(app):
     """[결함 7 검증] 마우스가 카드 위에 있는 상태(underMouse)에서 COMPLETED 전이 시 호버 툴바가 즉시 동기화됨."""
     from unittest.mock import patch
 
-    card = TaskCardWidget("https://chzzk.naver.com/video/11111", status=TaskStatus.DOWNLOADING)
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/11111", status=TaskStatus.DOWNLOADING
+    )
     card.show()
     with patch.object(card, "underMouse", return_value=True):
         card.set_completed("dummy.mp4")
@@ -391,12 +450,17 @@ def test_format_task_info_completed_done_flag_and_final_path(app, tmp_path):
     """[결함 8 검증] TaskInfoWindow의 format_task_info에서 COMPLETED 작업의 done이 True이고 final_file_path가 정상 노출됨."""
     from chzzk_downloader.gui.task_info_window import format_task_info
 
-    card = TaskCardWidget("https://chzzk.naver.com/video/11111", status=TaskStatus.READY)
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/11111", status=TaskStatus.READY
+    )
     fake_file = tmp_path / "completed_video.mp4"
     fake_file.write_bytes(b"dummy")
     card.set_completed(fake_file)
 
     info_str = format_task_info(card)
-    assert "done: True" in info_str or "valid / done: True / True" in info_str or "COMPLETED" in info_str
+    assert (
+        "done: True" in info_str
+        or "valid / done: True / True" in info_str
+        or "COMPLETED" in info_str
+    )
     assert "completed_video.mp4" in info_str
-

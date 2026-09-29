@@ -23,17 +23,23 @@ def sample_task_spec(tmp_path) -> TaskSpec:
     )
 
 
-def test_build_vod_download_opts_security_and_defense_headers(sample_task_spec, tmp_path):
+def test_build_vod_download_opts_security_and_defense_headers(
+    sample_task_spec, tmp_path
+):
     """네이버 CDN 400 방어 헤더 및 FFmpeg .m4v 거부 방어 인자가 올바르게 주입되는지 검증."""
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_path",
-        return_value=Path("C:/fake/ffmpeg.exe"),
-    ), patch(
-        "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_compatible_args",
-        return_value=["-extension_picky", "0", "-allowed_extensions", "ALL"],
-    ), patch(
-        "chzzk_downloader.core.cookie_manager.has_valid_cookies",
-        return_value=False,
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_path",
+            return_value=Path("C:/fake/ffmpeg.exe"),
+        ),
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_compatible_args",
+            return_value=["-extension_picky", "0", "-allowed_extensions", "ALL"],
+        ),
+        patch(
+            "chzzk_downloader.core.cookie_manager.has_valid_cookies",
+            return_value=False,
+        ),
     ):
         opts = build_vod_download_opts(sample_task_spec)
 
@@ -43,7 +49,9 @@ def test_build_vod_download_opts_security_and_defense_headers(sample_task_spec, 
         assert "User-Agent" in opts["http_headers"]
 
         # 2. FFmpeg 바이너리 경로 및 .m4v 거부 방어 인자 검증
-        assert opts.get("ffmpeg_location") == "C:/fake/ffmpeg.exe" or Path(opts.get("ffmpeg_location")) == Path("C:/fake/ffmpeg.exe")
+        assert opts.get("ffmpeg_location") == "C:/fake/ffmpeg.exe" or Path(
+            opts.get("ffmpeg_location")
+        ) == Path("C:/fake/ffmpeg.exe")
         assert "postprocessor_args" in opts
         ffmpeg_post_args = opts["postprocessor_args"].get("ffmpeg", [])
         assert "-extension_picky" in ffmpeg_post_args
@@ -56,7 +64,9 @@ def test_build_vod_download_opts_security_and_defense_headers(sample_task_spec, 
             p.get("key") == "FFmpegVideoRemuxer" and p.get("preferedformat") == "mp4"
             for p in opts.get("postprocessors", [])
         )
-        assert str(sample_task_spec.save_path.parent) in opts.get("outtmpl", {}).get("default", str(opts.get("outtmpl", "")))
+        assert str(sample_task_spec.save_path.parent) in opts.get("outtmpl", {}).get(
+            "default", str(opts.get("outtmpl", ""))
+        )
 
 
 def test_build_vod_download_opts_with_cookies(sample_task_spec, tmp_path):
@@ -64,11 +74,14 @@ def test_build_vod_download_opts_with_cookies(sample_task_spec, tmp_path):
     cookie_file = tmp_path / "cookies.txt"
     cookie_file.write_text("# Netscape HTTP Cookie File", encoding="utf-8")
 
-    with patch(
-        "chzzk_downloader.core.cookie_manager.has_valid_cookies", return_value=True
-    ), patch(
-        "chzzk_downloader.core.cookie_manager.get_cookie_file_path",
-        return_value=cookie_file,
+    with (
+        patch(
+            "chzzk_downloader.core.cookie_manager.has_valid_cookies", return_value=True
+        ),
+        patch(
+            "chzzk_downloader.core.cookie_manager.get_cookie_file_path",
+            return_value=cookie_file,
+        ),
     ):
         opts = build_vod_download_opts(sample_task_spec)
         assert opts.get("cookiefile") == str(cookie_file)
@@ -85,7 +98,9 @@ def test_vod_download_worker_successful_flow(sample_task_spec, qtbot):
 
     worker = VodDownloadWorker(sample_task_spec)
     worker.progress_updated.connect(progress_list.append)
-    worker.download_finished.connect(lambda tid, path: finished_list.append((tid, path)))
+    worker.download_finished.connect(
+        lambda tid, path: finished_list.append((tid, path))
+    )
 
     def mock_download(urls):
         # 다운로드 중 더미 파일 생성
@@ -193,14 +208,20 @@ def test_cleanup_partial_files_with_streamer_brackets(tmp_path):
     # 취소/실패 시 정리 로직 실행
     worker._cleanup_partial_files()
 
-    assert not part_file.exists(), "대괄호 파일명 패턴에서 .part 파일이 삭제되지 않고 남아있습니다."
-    assert not ytdl_file.exists(), "대괄호 파일명 패턴에서 .ytdl 파일이 삭제되지 않고 남아있습니다."
+    assert not part_file.exists(), (
+        "대괄호 파일명 패턴에서 .part 파일이 삭제되지 않고 남아있습니다."
+    )
+    assert not ytdl_file.exists(), (
+        "대괄호 파일명 패턴에서 .ytdl 파일이 삭제되지 않고 남아있습니다."
+    )
 
 
 def test_ghost_download_finished_when_file_not_found(tmp_path):
     """결함 7: 다운로드 완료 후 실제 파일이 생성되지 않은 경우 download_finished 대신 download_failed 방출 검증."""
     non_existent_file = tmp_path / "never_created.mp4"
-    spec = TaskSpec("123", "https://chzzk.naver.com/video/123", save_path=non_existent_file)
+    spec = TaskSpec(
+        "123", "https://chzzk.naver.com/video/123", save_path=non_existent_file
+    )
     worker = VodDownloadWorker(spec)
 
     finished_events: list[tuple[str, str]] = []
@@ -215,8 +236,12 @@ def test_ghost_download_finished_when_file_not_found(tmp_path):
 
         worker.run()
 
-    assert len(failed_events) > 0, "파일이 존재하지 않는데 download_failed가 방출되지 않았습니다."
-    assert len(finished_events) == 0, "존재하지 않는 파일에 대해 download_finished가 오방출되었습니다."
+    assert len(failed_events) > 0, (
+        "파일이 존재하지 않는데 download_failed가 방출되지 않았습니다."
+    )
+    assert len(finished_events) == 0, (
+        "존재하지 않는 파일에 대해 download_finished가 오방출되었습니다."
+    )
 
 
 def test_format_speed_edge_cases():

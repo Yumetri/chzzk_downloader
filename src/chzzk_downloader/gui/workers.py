@@ -151,9 +151,7 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
     # 화질 선택 포맷 문자열
     quality = task_spec.selected_quality
     if quality and quality.lower() not in ("best", "최고 화질", "최고화질"):
-        format_str = (
-            f"bestvideo[format_id*={quality}]+bestaudio/best[format_id*={quality}]/bestvideo+bestaudio/best"
-        )
+        format_str = f"bestvideo[format_id*={quality}]+bestaudio/best[format_id*={quality}]/bestvideo+bestaudio/best"
     else:
         format_str = "bestvideo+bestaudio/best"
 
@@ -325,7 +323,9 @@ class VodDownloadWorker(QThread):
                     final_path = valid[0]
 
             if not final_path.exists():
-                raise FileNotFoundError(f"다운로드 대상 파일이 디스크에 생성되지 않았습니다: {final_path}")
+                raise FileNotFoundError(
+                    f"다운로드 대상 파일이 디스크에 생성되지 않았습니다: {final_path}"
+                )
 
             self.download_finished.emit(self.task_id, str(final_path))
 

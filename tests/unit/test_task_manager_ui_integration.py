@@ -408,11 +408,20 @@ def test_task_manager_progress_cache_cleanup_on_completion(app):
 def test_defect_stop_download_on_completed_causes_desync(app, tmp_path):
     """[2차 결함 1] COMPLETED 상태인 카드에 trigger_stop_download 호출 시 거부 및 상태 일치 검증."""
     window = MainWindow()
-    info = VodInfo("123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/123", status=TaskStatus.READY, vod_info=info, parent=window)
+    info = VodInfo(
+        "123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)]
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/123",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     window.task_list_widget.add_task_card(card)
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True):
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
+    ):
         card.trigger_start_download()
 
     window.task_manager.report_completed("123", str(tmp_path / "123.mp4"))
@@ -431,11 +440,20 @@ def test_defect_stop_download_on_completed_causes_desync(app, tmp_path):
 def test_defect_trigger_start_download_without_ready_guard(app):
     """[2차 결함 2] READY가 아닌 상태(DOWNLOADING, QUEUED)에서 trigger_start_download 호출 시 차단 검증."""
     window = MainWindow()
-    info = VodInfo("123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/123", status=TaskStatus.READY, vod_info=info, parent=window)
+    info = VodInfo(
+        "123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)]
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/123",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     window.task_list_widget.add_task_card(card)
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True):
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
+    ):
         assert card.trigger_start_download() is True
         assert card.status == TaskStatus.DOWNLOADING
 
@@ -447,11 +465,20 @@ def test_defect_trigger_start_download_without_ready_guard(app):
 def test_defect_remove_task_card_releases_slot_in_task_manager(app):
     """[2차 결함 3] remove_task_card 직접 호출 시에도 TaskManager 슬롯이 회수되는지 검증."""
     window = MainWindow()
-    info = VodInfo("123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/123", status=TaskStatus.READY, vod_info=info, parent=window)
+    info = VodInfo(
+        "123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)]
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/123",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     window.task_list_widget.add_task_card(card)
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True):
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
+    ):
         card.trigger_start_download()
 
     assert "123" in window.task_manager.get_running_vod_tasks()
@@ -465,11 +492,20 @@ def test_defect_remove_task_card_releases_slot_in_task_manager(app):
 def test_defect_redownload_resets_task_manager(app):
     """[2차 결함 4] 재다운로드 확인 시 TaskManager.reset_task가 호출되어 상태가 초기화되는지 검증."""
     window = MainWindow()
-    info = VodInfo("123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/123", status=TaskStatus.READY, vod_info=info, parent=window)
+    info = VodInfo(
+        "123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)]
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/123",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     window.task_list_widget.add_task_card(card)
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True):
+    with patch(
+        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
+    ):
         card.trigger_start_download()
 
     window.task_manager.report_completed("123", "dummy.mp4")
@@ -488,8 +524,15 @@ def test_defect_redownload_resets_task_manager(app):
 def test_defect_stale_waiting_position_cleared_on_queue_updated(app):
     """[2차 결함 5] pos <= 0 발생 시 on_queue_updated에서 대기 순번 문구가 정리되는지 검증."""
     window = MainWindow()
-    info = VodInfo("123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/123", status=TaskStatus.QUEUED, vod_info=info, parent=window)
+    info = VodInfo(
+        "123", "Title", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)]
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/123",
+        status=TaskStatus.QUEUED,
+        vod_info=info,
+        parent=window,
+    )
     card.set_waiting_position(5)
     window.task_list_widget.add_task_card(card)
     assert "5번" in card.status_label.text()
@@ -503,8 +546,20 @@ def test_defect_stale_waiting_position_cleared_on_queue_updated(app):
 def test_vod_download_worker_e2e_progress_and_completion(app, tmp_path, qtbot):
     """카드의 다운로드 트리거 시 VodDownloadWorker가 구동되어 UI 3번 위치 진행률 및 완료 상태가 동기화되는지 검증."""
     window = MainWindow()
-    info = VodInfo("v_e2e", "테스트 VOD", "스트리머", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/v_e2e", status=TaskStatus.READY, vod_info=info, parent=window)
+    info = VodInfo(
+        "v_e2e",
+        "테스트 VOD",
+        "스트리머",
+        "",
+        100,
+        [VodFormatInfo("1080p", "1080p", 60)],
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/v_e2e",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     card.custom_download_dir = tmp_path
     window.task_list_widget.add_task_card(card)
 
@@ -517,18 +572,25 @@ def test_vod_download_worker_e2e_progress_and_completion(app, tmp_path, qtbot):
         worker = window._download_workers.get("v_e2e")
         if worker:
             for hook in worker._ydl_opts.get("progress_hooks", []):
-                hook({
-                    "status": "downloading",
-                    "downloaded_bytes": 500,
-                    "total_bytes": 1000,
-                    "speed": 1024 * 1024,
-                    "eta": 5,
-                    "elapsed": 1.0,
-                })
+                hook(
+                    {
+                        "status": "downloading",
+                        "downloaded_bytes": 500,
+                        "total_bytes": 1000,
+                        "speed": 1024 * 1024,
+                        "eta": 5,
+                        "elapsed": 1.0,
+                    }
+                )
         return 0
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True), \
-         patch("yt_dlp.YoutubeDL") as mock_ydl:
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            return_value=True,
+        ),
+        patch("yt_dlp.YoutubeDL") as mock_ydl,
+    ):
         mock_instance = MagicMock()
         mock_instance.download.side_effect = mock_download
         mock_ydl.return_value.__enter__.return_value = mock_instance
@@ -551,8 +613,20 @@ def test_vod_download_worker_e2e_cancellation(app, tmp_path, qtbot):
     import time
 
     window = MainWindow()
-    info = VodInfo("v_cancel", "취소 테스트 VOD", "스트리머", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/v_cancel", status=TaskStatus.READY, vod_info=info, parent=window)
+    info = VodInfo(
+        "v_cancel",
+        "취소 테스트 VOD",
+        "스트리머",
+        "",
+        100,
+        [VodFormatInfo("1080p", "1080p", 60)],
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/v_cancel",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     card.custom_download_dir = tmp_path
     window.task_list_widget.add_task_card(card)
 
@@ -562,12 +636,23 @@ def test_vod_download_worker_e2e_cancellation(app, tmp_path, qtbot):
             while not worker._is_cancelled:
                 time.sleep(0.01)
             for hook in worker._ydl_opts.get("progress_hooks", []):
-                hook({"status": "downloading", "downloaded_bytes": 100, "total_bytes": 1000})
+                hook(
+                    {
+                        "status": "downloading",
+                        "downloaded_bytes": 100,
+                        "total_bytes": 1000,
+                    }
+                )
         return 0
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True), \
-         patch("yt_dlp.YoutubeDL") as mock_ydl, \
-         patch("chzzk_downloader.gui.task_card.ask_confirm_dialog", return_value=True):
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            return_value=True,
+        ),
+        patch("yt_dlp.YoutubeDL") as mock_ydl,
+        patch("chzzk_downloader.gui.task_card.ask_confirm_dialog", return_value=True),
+    ):
         mock_instance = MagicMock()
         mock_instance.download.side_effect = mock_download
         mock_ydl.return_value.__enter__.return_value = mock_instance
@@ -591,8 +676,20 @@ def test_defect_close_event_with_running_download_worker_no_crash(app, tmp_path,
     from chzzk_downloader.gui.main_window import _DETACHED_WORKERS
 
     window = MainWindow()
-    info = VodInfo("v_close", "창닫기 테스트", "스트리머", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card = TaskCardWidget("https://chzzk.naver.com/video/v_close", status=TaskStatus.READY, vod_info=info, parent=window)
+    info = VodInfo(
+        "v_close",
+        "창닫기 테스트",
+        "스트리머",
+        "",
+        100,
+        [VodFormatInfo("1080p", "1080p", 60)],
+    )
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/v_close",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     card.custom_download_dir = tmp_path
     window.task_list_widget.add_task_card(card)
 
@@ -600,8 +697,13 @@ def test_defect_close_event_with_running_download_worker_no_crash(app, tmp_path,
         time.sleep(1.0)
         return 0
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True), \
-         patch("yt_dlp.YoutubeDL") as mock_ydl:
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            return_value=True,
+        ),
+        patch("yt_dlp.YoutubeDL") as mock_ydl,
+    ):
         mock_instance = MagicMock()
         mock_instance.download.side_effect = slow_download
         mock_ydl.return_value.__enter__.return_value = mock_instance
@@ -619,7 +721,10 @@ def test_defect_close_event_with_running_download_worker_no_crash(app, tmp_path,
         assert worker in _DETACHED_WORKERS or not worker.isRunning()
 
         if worker.isRunning():
-            qtbot.waitUntil(lambda: not worker.isRunning() and worker not in _DETACHED_WORKERS, timeout=3000)
+            qtbot.waitUntil(
+                lambda: not worker.isRunning() and worker not in _DETACHED_WORKERS,
+                timeout=3000,
+            )
 
 
 def test_defect_redownload_not_killed_by_dying_worker_signal(app, tmp_path, qtbot):
@@ -627,7 +732,11 @@ def test_defect_redownload_not_killed_by_dying_worker_signal(app, tmp_path, qtbo
     import time
 
     window = MainWindow()
-    spec = TaskSpec("v_race", "https://chzzk.naver.com/video/v_race", save_path=tmp_path / "race.mp4")
+    spec = TaskSpec(
+        "v_race",
+        "https://chzzk.naver.com/video/v_race",
+        save_path=tmp_path / "race.mp4",
+    )
     window.task_manager.add_task(spec)
     old_worker = window._download_workers.get("v_race")
     assert old_worker is not None
@@ -655,7 +764,9 @@ def test_defect_redownload_not_killed_by_dying_worker_signal(app, tmp_path, qtbo
 
     # 신규 다운로드 작업이 STOPPED로 오염되지 않고 DOWNLOADING 상태를 유지해야 함
     status = window.task_manager.get_task_status("v_race")
-    assert status == TaskStatus.DOWNLOADING, f"신규 다운로드 작업이 이전 워커의 지연 시그널로 인해 {status}로 사망했습니다."
+    assert status == TaskStatus.DOWNLOADING, (
+        f"신규 다운로드 작업이 이전 워커의 지연 시그널로 인해 {status}로 사망했습니다."
+    )
     window.close()
 
 
@@ -663,7 +774,12 @@ def test_defect_single_call_start_vod_download(app, mock_vod_info_factory, tmp_p
     """결함 4: 다운로드 시작 시 _start_vod_download가 2회 중복 호출되지 않고 정확히 1회만 호출되는지 검증."""
     window = MainWindow()
     info = mock_vod_info_factory("v_double")
-    card = TaskCardWidget("https://chzzk.naver.com/video/v_double", status=TaskStatus.READY, vod_info=info, parent=window)
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/v_double",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     card.custom_download_dir = tmp_path
     window.task_list_widget.add_task_card(card)
 
@@ -677,24 +793,43 @@ def test_defect_single_call_start_vod_download(app, mock_vod_info_factory, tmp_p
 
     window._start_vod_download = mock_start
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True), \
-         patch.object(VodDownloadWorker, "start", return_value=None):
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            return_value=True,
+        ),
+        patch.object(VodDownloadWorker, "start", return_value=None),
+    ):
         card.trigger_start_download()
 
-    assert call_count == 1, f"_start_vod_download가 1회가 아닌 {call_count}회 중복 호출되었습니다."
+    assert call_count == 1, (
+        f"_start_vod_download가 1회가 아닌 {call_count}회 중복 호출되었습니다."
+    )
     window.close()
 
 
-def test_defect_single_card_progress_update_throttled(app, mock_vod_info_factory, tmp_path):
+def test_defect_single_card_progress_update_throttled(
+    app, mock_vod_info_factory, tmp_path
+):
     """결함 5: 워커 프로그레스 수신 시 UI 중복 갱신이 발생하지 않고 스로틀링을 거치는지 검증."""
     window = MainWindow()
     info = mock_vod_info_factory("v_prog")
-    card = TaskCardWidget("https://chzzk.naver.com/video/v_prog", status=TaskStatus.READY, vod_info=info, parent=window)
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/v_prog",
+        status=TaskStatus.READY,
+        vod_info=info,
+        parent=window,
+    )
     card.custom_download_dir = tmp_path
     window.task_list_widget.add_task_card(card)
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True), \
-         patch.object(VodDownloadWorker, "start", return_value=None):
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            return_value=True,
+        ),
+        patch.object(VodDownloadWorker, "start", return_value=None),
+    ):
         card.trigger_start_download()
 
     update_count = 0
@@ -712,7 +847,9 @@ def test_defect_single_card_progress_update_throttled(app, mock_vod_info_factory
     p = TaskProgress("v_prog", downloaded_bytes=500, total_bytes=1000, percentage=50.0)
     window._on_worker_progress(worker, "v_prog", p)
 
-    assert update_count == 1, f"단일 프로그레스 수신 시 update_progress가 {update_count}회 중복 호출되었습니다."
+    assert update_count == 1, (
+        f"단일 프로그레스 수신 시 update_progress가 {update_count}회 중복 호출되었습니다."
+    )
     window.close()
 
 
@@ -732,14 +869,17 @@ def test_defect_thumbnail_loader_deletion_non_blocking(app, qtbot):
     card.deleteLater()
     elapsed = time.monotonic() - start_time
 
-    assert elapsed < 0.1, f"deleteLater 호출 시 UI 스레드가 {elapsed:.2f}초 동안 동기 블로킹되었습니다."
+    assert elapsed < 0.1, (
+        f"deleteLater 호출 시 UI 스레드가 {elapsed:.2f}초 동안 동기 블로킹되었습니다."
+    )
     assert loader in _DETACHED_LOADERS or not loader.isRunning()
     if loader.isRunning():
         from PyQt6 import sip
 
         qtbot.waitUntil(
-            lambda: sip.isdeleted(loader) or (not loader.isRunning() and loader not in _DETACHED_LOADERS),
+            lambda: (
+                sip.isdeleted(loader)
+                or (not loader.isRunning() and loader not in _DETACHED_LOADERS)
+            ),
             timeout=2000,
         )
-
-

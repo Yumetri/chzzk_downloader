@@ -485,7 +485,9 @@ class TaskCardWidget(QFrame):
                 loader = self._thumb_loader
                 loader.setParent(None)
                 _DETACHED_LOADERS.add(loader)
-                loader.finished.connect(lambda ref=loader: _DETACHED_LOADERS.discard(ref))
+                loader.finished.connect(
+                    lambda ref=loader: _DETACHED_LOADERS.discard(ref)
+                )
                 loader.finished.connect(loader.deleteLater)
                 loader.quit()
             self._thumb_loader = None

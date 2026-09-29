@@ -181,9 +181,7 @@ class MainWindow(QMainWindow):
         self.task_manager.signals.task_failed.connect(self._on_task_failed)
         self.task_manager.signals.task_removed.connect(self._on_task_removed)
         self.task_manager.signals.queue_updated.connect(self._on_queue_updated)
-        self.task_manager.signals.task_progress_updated.connect(
-            self._on_task_progress
-        )
+        self.task_manager.signals.task_progress_updated.connect(self._on_task_progress)
 
     def _init_ui(self) -> None:
         central_widget = QWidget(self)

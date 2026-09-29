@@ -29,15 +29,34 @@ def test_defect1_zombie_download_after_cancellation_race(app, tmp_path):
     window = MainWindow()
     window.task_manager.max_concurrent_vod = 1
 
-    info1 = VodInfo("t1", "Title 1", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    info2 = VodInfo("t2", "Title 2", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)])
-    card1 = TaskCardWidget("https://chzzk.naver.com/video/t1", status=TaskStatus.READY, vod_info=info1, parent=window)
-    card2 = TaskCardWidget("https://chzzk.naver.com/video/t2", status=TaskStatus.READY, vod_info=info2, parent=window)
+    info1 = VodInfo(
+        "t1", "Title 1", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)]
+    )
+    info2 = VodInfo(
+        "t2", "Title 2", "Streamer", "", 100, [VodFormatInfo("1080p", "1080p", 60)]
+    )
+    card1 = TaskCardWidget(
+        "https://chzzk.naver.com/video/t1",
+        status=TaskStatus.READY,
+        vod_info=info1,
+        parent=window,
+    )
+    card2 = TaskCardWidget(
+        "https://chzzk.naver.com/video/t2",
+        status=TaskStatus.READY,
+        vod_info=info2,
+        parent=window,
+    )
     window.task_list_widget.add_task_card(card1)
     window.task_list_widget.add_task_card(card2)
 
-    with patch("chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True), \
-         patch("chzzk_downloader.gui.workers.VodDownloadWorker.start"):
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            return_value=True,
+        ),
+        patch("chzzk_downloader.gui.workers.VodDownloadWorker.start"),
+    ):
         card1.trigger_start_download()
         card2.trigger_start_download()
 
@@ -56,15 +75,21 @@ def test_defect1_zombie_download_after_cancellation_race(app, tmp_path):
     window._on_task_status_changed("t2", TaskStatus.QUEUED, TaskStatus.DOWNLOADING)
 
     # 결함 증명: card2가 DOWNLOADING으로 부활하지 않고 STOPPED를 유지해야 하며, 워커가 시작되지 않아야 함
-    assert card2.status == TaskStatus.STOPPED, f"Task revived to {card2.status} instead of STOPPED"
-    assert "t2" not in window._download_workers, "Zombie worker was spawned for STOPPED task!"
+    assert card2.status == TaskStatus.STOPPED, (
+        f"Task revived to {card2.status} instead of STOPPED"
+    )
+    assert "t2" not in window._download_workers, (
+        "Zombie worker was spawned for STOPPED task!"
+    )
     window.close()
 
 
 def test_defect2_cleanup_worker_logic_inversion(app, tmp_path):
     """[결함 2 검증] 워커 정상 종료 시 _download_workers에서 pop되고, 이전 워커 정리가 신규 워커를 증발시키지 않아야 함."""
     window = MainWindow()
-    spec = TaskSpec("task_x", "https://chzzk.naver.com/video/task_x", save_path=tmp_path / "x.mp4")
+    spec = TaskSpec(
+        "task_x", "https://chzzk.naver.com/video/task_x", save_path=tmp_path / "x.mp4"
+    )
 
     # 1. 정상 종료 시: 워커가 _download_workers에서 pop되어야 함
     worker1 = VodDownloadWorker(spec, parent=window)
@@ -87,7 +112,9 @@ def test_defect2_cleanup_worker_logic_inversion(app, tmp_path):
 def test_defect3_task_info_window_dangling_reference(app):
     """[결함 3 검증] 작업 카드 삭제 시 열려 있는 TaskInfoWindow도 함께 닫혀 댕글링 크래시가 없어야 함."""
     window = MainWindow()
-    card = TaskCardWidget("https://chzzk.naver.com/video/999", status=TaskStatus.READY, parent=window)
+    card = TaskCardWidget(
+        "https://chzzk.naver.com/video/999", status=TaskStatus.READY, parent=window
+    )
     window.task_list_widget.add_task_card(card)
 
     card.open_task_info_window()
@@ -109,7 +136,12 @@ def test_defect4_unescaped_percent_in_outtmpl(tmp_path):
     """[결함 4 검증] 비디오 제목에 '%' 포함 시 outtmpl에서 '%%'로 이스케이프되어 yt-dlp 서식 파싱 에러를 방지해야 함."""
     title = "승률 100% 도전"
     sanitized = sanitize_filename(f"[스트리머] {title} (12345)")
-    spec = TaskSpec("12345", "https://chzzk.naver.com/video/12345", title=title, save_path=tmp_path / f"{sanitized}.mp4")
+    spec = TaskSpec(
+        "12345",
+        "https://chzzk.naver.com/video/12345",
+        title=title,
+        save_path=tmp_path / f"{sanitized}.mp4",
+    )
 
     opts = build_vod_download_opts(spec)
     outtmpl_str = opts["outtmpl"]["default"]
@@ -151,4 +183,6 @@ def test_defect6_best_quality_korean_string_filter(tmp_path):
     )
     opts = build_vod_download_opts(spec)
     format_opt = opts.get("format", "")
-    assert "최고 화질" not in format_opt, f"format 옵션에 한글 '최고 화질'이 주입됨: {format_opt}"
+    assert "최고 화질" not in format_opt, (
+        f"format 옵션에 한글 '최고 화질'이 주입됨: {format_opt}"
+    )
