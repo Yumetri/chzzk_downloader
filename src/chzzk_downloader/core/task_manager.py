@@ -192,7 +192,20 @@ class TaskManager:
         err_lower = (err_type + " " + msg).lower()
 
         # 세분화된 실패 상태 매핑
-        if any(k in err_lower for k in ("login", "adult", "성인", "로그인", "인증")):
+        if any(
+            k in err_lower
+            for k in (
+                "login",
+                "adult",
+                "성인",
+                "로그인",
+                "인증",
+                "401",
+                "403",
+                "unauthorized",
+                "forbidden",
+            )
+        ):
             new_status = TaskStatus.FAILED_LOGIN_REQUIRED
         elif any(
             k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")

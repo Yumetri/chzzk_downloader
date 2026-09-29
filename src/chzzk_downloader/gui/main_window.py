@@ -1,5 +1,6 @@
 """메인 윈도우 모듈."""
 
+from pathlib import Path
 from typing import Any
 
 from PyQt6 import sip
@@ -314,6 +315,14 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "_settings_window") and self._settings_window is not None:
             self._settings_window.close()
+
+        # 열려 있는 모든 작업 카드의 TaskInfoWindow 닫기
+        for card in self.task_list_widget.get_all_cards():
+            if hasattr(card, "_info_win") and card._info_win is not None:
+                if not sip.isdeleted(card._info_win):
+                    card._info_win.close()
+                card._info_win = None
+
         super().closeEvent(event)
 
     def _check_cookie_session_on_startup(self) -> None:
@@ -730,9 +739,11 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _cleanup_worker(self, task_id: str, worker: VodDownloadWorker) -> None:
-        """워커 종료 시 활성 워커 딕셔너리에서 안전하게 제거합니다."""
+        """워커 종료 시 활성 워커 딕셔너리 및 부모 위젯에서 안전하게 분리합니다."""
         if self._download_workers.get(task_id) is worker:
             self._download_workers.pop(task_id, None)
+        if not sip.isdeleted(worker):
+            worker.setParent(None)
 
     def _on_worker_progress(
         self, worker: VodDownloadWorker, task_id: str, progress: TaskProgress
@@ -789,29 +800,75 @@ class MainWindow(QMainWindow):
             self._start_vod_download(task_id)
 
     def _on_task_completed(self, task_id: str, final_file_path: str) -> None:
-        """TaskManager로부터 작업 완료 알림을 수신합니다."""
+        """TaskManager로부터 작업 완료 알림을 수신하여 카드를 완료 처리하고 완료 토스트를 노출합니다."""
         card = self.task_list_widget.find_task_card_by_id(task_id)
-        if card is not None and not card.is_deleted and not sip.isdeleted(card):
-            card.set_task_status(TaskStatus.COMPLETED)
+        if card is None or card.is_deleted or sip.isdeleted(card):
+            return
+
+        card.set_completed(final_file_path)
+
+        file_name = Path(final_file_path).name if final_file_path else task_id
+        self.toast.show_toast(
+            f"+ 다운로드 완료: {file_name}",
+            ToastType.SUCCESS,
+            auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+        )
 
     def _on_task_failed(
         self, task_id: str, err_type: str, msg: str, traceback_str: str
     ) -> None:
-        """TaskManager로부터 작업 실패 알림을 수신합니다."""
+        """TaskManager로부터 작업 실패 알림을 수신하여 상태 전이 및 사유별 토스트를 노출합니다."""
         card = self.task_list_widget.find_task_card_by_id(task_id)
-        if card is not None and not card.is_deleted and not sip.isdeleted(card):
-            err_lower = (err_type + " " + msg).lower()
-            if any(
-                k in err_lower for k in ("login", "adult", "성인", "로그인", "인증")
-            ):
-                card.set_failed(TaskStatus.FAILED_LOGIN_REQUIRED, msg)
-            elif any(
-                k in err_lower
-                for k in ("notfound", "invalid", "잘못된", "비공개", "404")
-            ):
-                card.set_failed(TaskStatus.FAILED_INVALID, msg)
-            else:
-                card.set_failed(TaskStatus.FAILED_DOWNLOAD, msg)
+        if card is None or card.is_deleted or sip.isdeleted(card):
+            return
+
+        err_lower = (err_type + " " + msg).lower()
+        if any(
+            k in err_lower
+            for k in (
+                "login",
+                "adult",
+                "성인",
+                "로그인",
+                "인증",
+                "401",
+                "403",
+                "unauthorized",
+                "forbidden",
+            )
+        ):
+            failed_status = TaskStatus.FAILED_LOGIN_REQUIRED
+            self.toast.show_action_toast(
+                '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
+                '<span style="color: #ffffff;">쿠키를 갱신하세요</span>',
+                buttons=[
+                    ("🍪", "transparent", self._on_settings_clicked, "쿠키 설정"),
+                    ("N", "#03c75a", self._on_naver_login_clicked, "네이버 로그인"),
+                ],
+            )
+        elif any(
+            k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")
+        ):
+            failed_status = TaskStatus.FAILED_INVALID
+            self.toast.show_toast(
+                f"Invalid: {msg}",
+                ToastType.ERROR,
+                auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+            )
+        else:
+            failed_status = TaskStatus.FAILED_DOWNLOAD
+            self.toast.show_toast(
+                f"다운로드 실패: {msg}",
+                ToastType.ERROR,
+                auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+            )
+
+        card.set_failed(
+            failed_status,
+            msg,
+            error_type=err_type,
+            traceback_str=traceback_str,
+        )
 
     def _on_card_request_stop_download(self, task_id: str) -> None:
         """카드의 중지 요청을 워커 및 TaskManager에 반영합니다."""

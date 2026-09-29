@@ -9,10 +9,11 @@ from __future__ import annotations
 import locale
 import platform
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QCloseEvent, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -80,7 +81,7 @@ def format_task_info(card: TaskCardWidget) -> str:
     lines.append("zip: ")
     artist_name = card.vod_info.channel_name if card.vod_info else "None"
     lines.append(f"artist: {artist_name}")
-    is_done = card.status.value in ("STOPPED", "READY")
+    is_done = card.status.value in ("STOPPED", "COMPLETED")
     is_valid = card.status.value not in ("FAILED_INVALID", "FAILED_LOGIN_REQUIRED")
     lines.append(f"valid / done: {is_valid} / {is_done}")
     lines.append("range / range_p: None / None")
@@ -110,7 +111,9 @@ def format_task_info(card: TaskCardWidget) -> str:
 
     # 3. [File Names]
     lines.append("[File Names]")
-    if card.target_path:
+    if getattr(card, "final_file_path", None):
+        lines.append(Path(card.final_file_path).name)
+    elif card.target_path:
         lines.append(str(card.target_path.name))
     lines.append("")
     lines.append("")
@@ -124,26 +127,20 @@ def format_task_info(card: TaskCardWidget) -> str:
 
     # 5. [Messages]
     lines.append("[Messages]")
-    if card.status.value == "FAILED_LOGIN_REQUIRED":
-        lines.append("vodStatus: ABR_HLS")
-        lines.append("adult: True")
-        lines.append("adult_status: NOT_LOGIN_USER")
-        lines.append("vodStatus: ABR_HLS")
-        lines.append("adult: True")
-        lines.append("adult_status: NOT_LOGIN_USER")
+    if getattr(card, "traceback_str", ""):
+        if getattr(card, "error_type", ""):
+            lines.append(f"Error Type: {card.error_type}")
+        if getattr(card, "error_message", ""):
+            lines.append(f"Error Message: {card.error_message}")
         lines.append("")
-        lines.append("stop")
-        lines.append("Traceback (most recent call last):")
-        lines.append('  File "chzzk_downloader/gui/workers.py", line 58, in run')
-        lines.append(
-            '  File "chzzk_downloader/core/ytdlp_wrapper.py", line 120, in extract_vod_info'
-        )
+        lines.append(card.traceback_str)
+        lines.append("")
+        lines.append(f"EOT: {card.raw_url}")
+    elif card.status.value == "FAILED_LOGIN_REQUIRED":
         lines.append("LoginRequired_chzzk")
         if card.error_message:
             lines.append(f"Detail: {card.error_message}")
-        lines.append("")
-        lines.append("Invalid: fail=False")
-        lines.append(f"EOT: {card.raw_url}  (0.2s)")
+        lines.append(f"EOT: {card.raw_url}")
     elif card.error_message:
         lines.append(card.error_message)
     else:
@@ -160,8 +157,19 @@ class TaskInfoWindow(QWidget):
 
     def __init__(self, card: TaskCardWidget, parent: QWidget | None = None) -> None:
         super().__init__(None)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.card = card
         self._init_ui()
+
+    def refresh_info(self) -> None:
+        """카드 최신 상태로 텍스트를 새로고침합니다."""
+        self.text_edit.setPlainText(format_task_info(self.card))
+
+    def closeEvent(self, event: QCloseEvent | None) -> None:  # noqa: N802
+        """창이 닫힐 때 카드의 창 참조를 초기화합니다."""
+        if hasattr(self.card, "_info_win"):
+            self.card._info_win = None
+        super().closeEvent(event)
 
     def _init_ui(self) -> None:
         title_suffix = self.card.video_no or self.card.raw_url
