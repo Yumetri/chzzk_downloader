@@ -230,6 +230,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+
 class TaskStatus(Enum):
     QUEUED = "QUEUED"
     ANALYZING = "ANALYZING"
@@ -241,21 +242,25 @@ class TaskStatus(Enum):
     FAILED_DOWNLOAD = "FAILED_DOWNLOAD"
     COMPLETED = "COMPLETED"
 
+
 @dataclass
 class TaskProgress:
     """실시간 다운로드 진행 정보."""
+
     task_id: str
     downloaded_bytes: int
     total_bytes: int
-    percentage: float          # 0.0 ~ 100.0
-    speed_bytes_sec: float     # 초당 바이트 수
-    speed_str: str             # 예: "15.4 MB/s"
-    eta_seconds: int           # 남은 시간(초)
-    eta_str: str               # 예: "00:03:25"
+    percentage: float  # 0.0 ~ 100.0
+    speed_bytes_sec: float  # 초당 바이트 수
+    speed_str: str  # 예: "15.4 MB/s"
+    eta_seconds: int  # 남은 시간(초)
+    eta_str: str  # 예: "00:03:25"
+
 
 @dataclass
 class TaskSpec:
     """작업 생성 및 실행 명세."""
+
     task_id: str
     video_url: str
     is_live: bool
@@ -271,20 +276,23 @@ class TaskSpec:
 ```python
 from PyQt6.QtCore import QObject, pyqtSignal
 
+
 class TaskManagerSignals(QObject):
     # 1. 작업 생명주기 및 상태 변화 시그널
-    task_added = pyqtSignal(str, object)                 # (task_id, TaskSpec)
-    task_status_changed = pyqtSignal(str, object, object)# (task_id, old_status, new_status)
-    task_completed = pyqtSignal(str, str)                # (task_id, final_file_path)
-    task_failed = pyqtSignal(str, str, str, str)         # (task_id, err_type, msg, traceback)
-    task_removed = pyqtSignal(str)                       # (task_id) - 파일 삭제 또는 목록 제거 시 방출
+    task_added = pyqtSignal(str, object)  # (task_id, TaskSpec)
+    task_status_changed = pyqtSignal(
+        str, object, object
+    )  # (task_id, old_status, new_status)
+    task_completed = pyqtSignal(str, str)  # (task_id, final_file_path)
+    task_failed = pyqtSignal(str, str, str, str)  # (task_id, err_type, msg, traceback)
+    task_removed = pyqtSignal(str)  # (task_id) - 파일 삭제 또는 목록 제거 시 방출
 
     # 2. 고주파 프로그레스 시그널 (UI 렌더링 부하 방지를 위해 100ms 스로틀링 적용)
-    task_progress_updated = pyqtSignal(str, object)      # (task_id, TaskProgress)
+    task_progress_updated = pyqtSignal(str, object)  # (task_id, TaskProgress)
 
     # 3. 큐 및 스케줄러 상태 시그널
-    task_reordered = pyqtSignal(str, int, int)           # (task_id, old_index, new_index)
-    queue_updated = pyqtSignal(int, int, int)            # (running_vod, queued_vod, running_live)
+    task_reordered = pyqtSignal(str, int, int)  # (task_id, old_index, new_index)
+    queue_updated = pyqtSignal(int, int, int)  # (running_vod, queued_vod, running_live)
 ```
 
 ---
