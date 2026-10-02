@@ -19,10 +19,10 @@
 | **컨테이너 보존** | MP4 (단일 moov) | 확장자와 무관하게 fMP4 무손실 직접 저장 | **무손실 fMP4 원본 그대로 안전 보존** |
 | **사후 무결성 검증** | 단순 파일 크기/FFprobe duration | 미지원 | **fMP4 `moof` 박스 기반 초고속 누락 정밀 진단** |
 
-> **💡 Streamlink 세그먼트 재시도 방어 메커니즘**:  
+> **💡 Streamlink 세그먼트 재시도 방어 메커니즘 (Streamlink >= 7.0, 권장 8.6.1+)**:  
 > 실시간 HLS 스트리밍 수신 중 네트워크 순간 단절, CDN 병목/스로틀링, 일시적 HTTP 404/502 응답이 발생했을 때:
 > - FFmpeg는 소켓 프리징(무한 대기)에 빠지거나 프로세스가 예기치 않게 종료되는 반면,
-> - Streamlink는 `--hls-segment-attempts <N>`(기본 3~5회 재시도), `--hls-segment-timeout`(조각별 타임아웃) 및 내부 슬라이딩 버퍼 큐를 통해 일시적인 네트워크 장애 상황에서도 세그먼트 누락 없이 끈질기게 재시도하여 녹화 파이프라인의 생존성을 극대화합니다.
+> - Streamlink(v7.0+ 최신 옵션 규격)는 `--stream-segment-attempts <N>`(기본 3~5회 재시도), `--stream-segment-timeout <초>`(조각별 타임아웃) 및 내부 슬라이딩 버퍼 큐를 통해 일시적인 네트워크 장애 상황에서도 세그먼트 누락 없이 끈질기게 재시도하여 녹화 파이프라인의 생존성을 극대화합니다.
 
 ---
 
@@ -148,10 +148,24 @@ class Fmp4IntegrityReport:
 
 1. **프로세스 격리 및 워치독**:
    - Streamlink 프로세스는 UI 스레드를 일절 블로킹하지 않도록 `QProcess` 또는 `subprocess.Popen` 기반의 독립 백그라운드 워커에서 구동합니다.
-2. **Windows 안전 종료 (Graceful Termination)**:
-   - 사용자가 녹화 중지(`STOP`)를 누르거나 프로그램 종료 시, `taskkill /F`와 같은 강제 프로세스 사살을 금지합니다.
-   - 표준 입력 닫기 또는 `SIGINT`(Windows의 경우 `CTRL_BREAK_EVENT` 또는 안전 종료 시그널)를 전송하여, Streamlink가 마지막으로 수신 중이던 `moof`+`mdat` 조각을 파일에 안전하게 플러시한 뒤 정상 종료되도록 보장합니다.
-3. **네트워크 장애 방어 파라미터**:
-   - `--hls-segment-attempts 5`: 세그먼트 다운로드 실패 시 끈질기게 재시도.
-   - `--hls-segment-timeout 10.0`: CDN 정체 시 행(Hang) 방지.
+   - 지원 런타임: **Streamlink `>= 7.0` (권장: `8.6.1+`)**
+
+2. **Windows 안전 종료(Graceful Termination) 및 녹화 중지 후 처리 절차**:
+   Streamlink는 스트림 수신 및 파일 쓰기 스레드가 분리되어 동작하므로, 단순 시그널 전송만으로는 마지막 버퍼의 파일 저장이 보장되지 않습니다. 프로세스 종료 대기, 타임아웃 처리, 불완전 조각 복구의 순서를 아래와 같이 엄격히 규정합니다:
+   - **(1) 안전 종료 신호 전송 (Signal Dispatch)**:
+     - 사용자가 녹화 중지(`STOP`)를 누르거나 프로그램 종료 시, `taskkill /F` 등 즉시 강제 종료를 금지합니다.
+     - 프로세스에 `SIGINT` (Windows 환경의 경우 콘솔 컨트롤 이벤트 `CTRL_BREAK_EVENT` 또는 안전 종료 시그널)를 전송하여 Streamlink가 현재 수신 버퍼를 파일에 플러시하고 정상 종료 루틴에 진입하도록 유도합니다.
+   - **(2) 프로세스 종료 대기 및 타임아웃 폴백 (Wait & Timeout Handling)**:
+     - 최대 10초(`GRACEFUL_SHUTDOWN_TIMEOUT = 10.0`) 동안 프로세스 종료를 대기(`process.wait(timeout=10.0)`)합니다.
+     - 10초 이내에 정상 종료되지 않고 행(Hang) 상태에 머무를 경우, 비로소 `process.kill()` 또는 `taskkill /F /PID`를 실행하여 프로세스를 강제 회수합니다.
+   - **(3) 프로세스 완전 종료 확인 후 사후 처리 착수 (Strict Ordering)**:
+     - 운영체제 레벨에서 프로세스가 완전히 종료(Return Code 반환)되었음을 확인하기 전에는 **파일 이동, 이름 변경, 임시 파일 정리, 작업 완료/중지 상태 전이(`COMPLETED`/`STOPPED`)를 절대 시작하지 않습니다**. (동시 파일 접근으로 인한 `PermissionError` 및 파일 핸들 누수 원천 차단)
+   - **(4) 마지막 불완전 세그먼트(Tail Fragment) 검증 및 복구 처리**:
+     - 네트워크 강제 단절이나 타임아웃 강제 사살로 인해 파일 끝부분에 미완성된 `moof` 헤더 또는 `mdat` 데이터 바이트가 남을 수 있습니다.
+     - 3절의 `fMP4 Integrity Checker`가 파일 끝부분을 스캔하여, 마지막 `moof`+`mdat` 조각이 정상 완성되지 않고 도중에 끊긴 경우 **마지막으로 온전히 완성된 프래그먼트의 끝 바이트 오프셋까지만 파일을 안전하게 잘라냅니다(File Truncation)**.
+     - 이를 통해 플레이어가 파일 끝부분을 재생할 때 컨테이너 파손 에러 없이, 녹화 중단 직전까지 정상 수신된 모든 구간을 100% 매끄럽게 재생할 수 있도록 보장합니다.
+
+3. **네트워크 장애 방어 파라미터 (Streamlink 7.0+ 최신 규격)**:
+   - `--stream-segment-attempts 5`: 세그먼트 다운로드 실패 시 끈질기게 재시도 (구 `--hls-segment-attempts` 대체).
+   - `--stream-segment-timeout 10.0`: CDN 정체 시 행(Hang) 방지 (구 `--hls-segment-timeout` 대체).
    - `--http-header "User-Agent=..."` 및 `--http-header "Referer=https://chzzk.naver.com/"` 필수 주입.
