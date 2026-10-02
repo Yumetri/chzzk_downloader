@@ -166,6 +166,7 @@ class TaskCardWidget(QFrame):
     request_naver_login = pyqtSignal()
     download_started = pyqtSignal()
     download_stopped = pyqtSignal()
+    download_blocked = pyqtSignal(str)
 
     def __init__(
         self,
@@ -575,12 +576,21 @@ class TaskCardWidget(QFrame):
         if not self.vod_info:
             return False
 
+        from chzzk_downloader.core.ffmpeg_manager import is_ffmpeg_available
+
+        if not is_ffmpeg_available(auto_download=False):
+            self.download_blocked.emit(
+                "FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요."
+            )
+            return False
+
         settings = get_current_settings()
         save_dir = self.custom_download_dir or settings.download_dir
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        except OSError as e:
+            self.download_blocked.emit(f"저장 폴더를 생성할 수 없습니다: {e}")
+            return False
 
         ext = (
             self.ext_combo.currentText()

@@ -36,6 +36,7 @@ class TaskListWidget(QWidget):
 
     request_open_settings = pyqtSignal()
     request_naver_login = pyqtSignal()
+    download_blocked = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -112,6 +113,7 @@ class TaskListWidget(QWidget):
         card.delete_requested.connect(_on_delete)
         card.request_open_cookies.connect(self.request_open_settings.emit)
         card.request_naver_login.connect(self.request_naver_login.emit)
+        card.download_blocked.connect(self.download_blocked.emit)
         self.refresh_state()
         return item
 
@@ -172,6 +174,7 @@ class MainWindow(QMainWindow):
         self.task_list_widget = TaskListWidget(self)
         self.task_list_widget.request_open_settings.connect(self._on_settings_clicked)
         self.task_list_widget.request_naver_login.connect(self._on_naver_login_clicked)
+        self.task_list_widget.download_blocked.connect(self._on_download_blocked)
         self.task_list = self.task_list_widget.list_widget
         self.empty_label = self.task_list_widget.empty_label
         main_layout.addWidget(self.task_list_widget)
@@ -597,5 +600,13 @@ class MainWindow(QMainWindow):
         self.toast.show_toast(
             toast_msg,
             ToastType.ERROR,
+            auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+        )
+
+    def _on_download_blocked(self, reason: str) -> None:
+        """다운로드 시작 차단 시 경고 토스트를 표시합니다 (T0110)."""
+        self.toast.show_toast(
+            f'<span style="color: #f59e0b;">⚠️</span> {reason}',
+            ToastType.WARNING,
             auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
         )

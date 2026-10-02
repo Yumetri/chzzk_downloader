@@ -120,6 +120,12 @@ class FeedbackShowcaseWindow(QMainWindow):
             self._demo_toast_cookie_expired_action,
             "#d97706",
         )
+        self._add_btn(
+            toast_layout,
+            "[T07] FFmpeg 미가용 경고 (⚠️ 경고 아이콘)",
+            self._demo_toast_ffmpeg_unavailable,
+            "#d97706",
+        )
         toast_layout.addStretch()
         columns_layout.addWidget(toast_group, 1)
 
@@ -163,6 +169,12 @@ class FeedbackShowcaseWindow(QMainWindow):
             modal_layout,
             "[M07] 폴더 권한 오류 경고 모달",
             self._demo_modal_folder_error,
+            "#b45309",
+        )
+        self._add_btn(
+            modal_layout,
+            "[M10] FFmpeg 실행 파일 오류 경고 모달",
+            self._demo_modal_ffmpeg_error,
             "#b45309",
         )
         modal_layout.addStretch()
@@ -292,6 +304,14 @@ class FeedbackShowcaseWindow(QMainWindow):
             ],
         )
 
+    def _demo_toast_ffmpeg_unavailable(self) -> None:
+        self._log("[T07] FFmpeg 미가용 경고 토스트 호출")
+        self.toast.show_toast(
+            '<span style="color: #f59e0b;">⚠️</span> FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요.',
+            ToastType.WARNING,
+            auto_dismiss_ms=2000,
+        )
+
     # --- 모달 데모 메서드 ---
     def _demo_modal_stop_download(self) -> None:
         self._log("[M01] 다운로드 중지 확인 모달 호출 대기...")
@@ -363,6 +383,15 @@ class FeedbackShowcaseWindow(QMainWindow):
             "선택한 폴더에 쓰기 권한이 없습니다:\nC:\\System\\Restricted\n\n다른 폴더를 선택해주세요.",
         )
         self._log("[M07] 경고 모달 닫힘")
+
+    def _demo_modal_ffmpeg_error(self) -> None:
+        self._log("[M10] FFmpeg 실행 파일 오류 경고 모달 호출")
+        QMessageBox.warning(
+            self,
+            "Chzzk Downloader",
+            "선택한 파일이 유효한 FFmpeg 실행 파일이 아닙니다:\nC:\\invalid\\path\\fake_ffmpeg.exe\n\n상태: 실행 실패",
+        )
+        self._log("[M10] 경고 모달 닫힘")
 
     # --- 작업 목록 카드 데모 탭 구성 ---
     def _create_cards_tab(self) -> QWidget:

@@ -1,5 +1,6 @@
 """애플리케이션 전역 설정 및 상수."""
 
+import sys
 from pathlib import Path
 
 # 성공 토스트 자동 소멸 대기 시간 (밀리초 단위, 기본 2초)
@@ -34,3 +35,18 @@ AVAILABLE_QUALITIES: tuple[str, ...] = ("최고 화질", "1080p", "720p", "480p"
 
 # 선택 가능한 기본 파일 확장자 목록 (T0108)
 AVAILABLE_EXTENSIONS: tuple[str, ...] = (".mp4", ".ts")
+
+# FFmpeg 바이너리 탐색 및 프로빙 타임아웃 (초 단위, T0110)
+FFMPEG_PROBE_TIMEOUT_SEC: float = 3.0
+
+# 기본 FFmpeg 바이너리 파일명 (T0110)
+DEFAULT_FFMPEG_BINARY_NAME: str = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+
+# 기본 FFprobe 바이너리 파일명 (T0110)
+DEFAULT_FFPROBE_BINARY_NAME: str = (
+    "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
+)
+
+# FFmpeg 온디맨드 자동 다운로드 기본 URL 및 타임아웃 (6단계 부트스트랩)
+DEFAULT_FFMPEG_DOWNLOAD_URL: str = "https://github.com/GyanD/codexffmpeg/releases/download/6.0/ffmpeg-6.0-essentials_build.zip"
+FFMPEG_DOWNLOAD_TIMEOUT_SEC: float = 30.0
