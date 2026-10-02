@@ -5,16 +5,33 @@ from pathlib import Path
 
 from chzzk_downloader.core.ytdlp import VodInfo
 
-# Windows 파일명 금지 문자 정규식 (콜론은 전각 콜론으로 변환되므로 제외)
-_INVALID_CHARS_REGEX = re.compile(r'[\\/*?"<>|\r\n\t]')
+# 파일시스템 금지 문자를 보존성이 높은 전각(Fullwidth) 유니코드 문자로 치환하는 매핑 (Hitomi 표준)
+FULLWIDTH_CHAR_MAP: dict[str, str] = {
+    ":": "\uff1a",  # 전각 콜론 (：)
+    "/": "\uff0f",  # 전각 슬래시 (／)
+    "?": "\uff1f",  # 전각 물음표 (？)
+    "*": "\uff0a",  # 전각 별표 (＊)
+    "\\": "\uff3c",  # 전각 역슬래시 (＼)
+    "|": "\uff5c",  # 전각 수직선 (｜)
+    '"': "\uff02",  # 전각 따옴표 (＂)
+    "<": "\uff1c",  # 전각 부등호 (＜)
+    ">": "\uff1e",  # 전각 부등호 (＞)
+}
+
+# 제어 문자 및 기타 파일시스템 금지 문자 정규식
+_CONTROL_CHARS_REGEX = re.compile(r"[\r\n\t\x00-\x1f\x7f]")
 
 
 def sanitize_filename(name: str) -> str:
-    """파일명에서 파일시스템 금지 문자를 정제하고 콜론을 전각 콜론으로 변환합니다."""
-    # 1. 콜론(:)을 전각 콜론(：)으로 치환
-    sanitized = name.replace(":", "\uff1a")
-    # 2. 기타 파일시스템 금지 문자 치환
-    sanitized = _INVALID_CHARS_REGEX.sub("_", sanitized)
+    """파일명에서 파일시스템 금지 문자를 의미를 보존하는 전각(Fullwidth) 문자로 치환합니다."""
+    # 1. 파일시스템 금지 문자를 전각 유니코드 문자로 치환 (:, /, ?, *, \, |, ", <, >)
+    sanitized = name
+    for ch, full_ch in FULLWIDTH_CHAR_MAP.items():
+        sanitized = sanitized.replace(ch, full_ch)
+
+    # 2. 제어 문자(\r, \n, \t 등) 공백 치환
+    sanitized = _CONTROL_CHARS_REGEX.sub(" ", sanitized)
+
     # 3. 연속 공백 정리 및 앞뒤 공백/마침표 제거
     sanitized = re.sub(r"\s+", " ", sanitized).strip(" .")
     return sanitized or "untitled"

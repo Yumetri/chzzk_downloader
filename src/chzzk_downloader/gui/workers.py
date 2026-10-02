@@ -219,6 +219,7 @@ class VodDownloadWorker(QThread):
         self.task_id = task_spec.task_id
         self._is_cancelled = False
         self._last_progress_emit_time = 0.0
+        self._start_time = 0.0
         self._ydl_opts: dict[str, Any] = {}
 
     def cancel(self) -> None:
@@ -231,6 +232,9 @@ class VodDownloadWorker(QThread):
             raise DownloadCancelledError("다운로드가 사용자에 의해 취소되었습니다.")
 
         status = d.get("status")
+        now_perf = time.perf_counter()
+        elapsed = now_perf - self._start_time if self._start_time > 0 else 0.0
+
         if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes") or 0
@@ -251,6 +255,7 @@ class VodDownloadWorker(QThread):
                     speed_str=format_speed(speed),
                     eta_seconds=eta,
                     eta_str=format_eta(eta),
+                    elapsed_seconds=elapsed,
                 )
                 self.progress_updated.emit(progress)
 
@@ -265,6 +270,7 @@ class VodDownloadWorker(QThread):
                 speed_str="0.0 KB/s",
                 eta_seconds=0,
                 eta_str="00:00:00",
+                elapsed_seconds=elapsed,
             )
             self.progress_updated.emit(progress)
 
@@ -297,6 +303,7 @@ class VodDownloadWorker(QThread):
             return
 
         try:
+            self._start_time = time.perf_counter()
             self._ydl_opts = build_vod_download_opts(self.task_spec)
             self._ydl_opts["progress_hooks"] = [self._progress_hook]
 
@@ -327,14 +334,24 @@ class VodDownloadWorker(QThread):
                     f"다운로드 대상 파일이 디스크에 생성되지 않았습니다: {final_path}"
                 )
 
+            file_size = final_path.stat().st_size
+            if file_size <= 0:
+                try:
+                    final_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise ValueError(
+                    f"다운로드된 파일의 크기가 0바이트(빈 파일)입니다: {final_path}"
+                )
+
             self.download_finished.emit(self.task_id, str(final_path))
 
         except DownloadCancelledError:
             self._cleanup_partial_files()
             self.download_stopped.emit(self.task_id)
         except Exception as e:
+            self._cleanup_partial_files()
             if self._is_cancelled:
-                self._cleanup_partial_files()
                 self.download_stopped.emit(self.task_id)
             else:
                 self.download_failed.emit(

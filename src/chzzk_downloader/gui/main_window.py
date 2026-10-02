@@ -819,9 +819,25 @@ class MainWindow(QMainWindow):
         card.set_completed(final_file_path)
 
         file_name = Path(final_file_path).name if final_file_path else task_id
+        toast_msg = (
+            f'<span style="color: #10b981; font-weight: bold; font-size: 14px;">✓</span> '
+            f'<span style="color: #ffffff;">{file_name}</span>'
+        )
         self.toast.show_toast(
-            f"+ 다운로드 완료: {file_name}",
+            toast_msg,
             ToastType.SUCCESS,
+            auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+        )
+
+    def show_file_deleted_toast(self, name_or_url: str) -> None:
+        """T08: 동영상 파일 삭제 시 반투명 알약형 삭제 토스트를 노출합니다."""
+        toast_msg = (
+            f'<span style="color: #ef4444; font-size: 14px;">🗑</span> '
+            f'<span style="color: #ffffff;">{name_or_url}</span>'
+        )
+        self.toast.show_toast(
+            toast_msg,
+            ToastType.ERROR,
             auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
         )
 
