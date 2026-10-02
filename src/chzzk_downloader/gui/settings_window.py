@@ -40,7 +40,7 @@ class SettingsWindow(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("환경설정")
-        self.resize(520, 460)
+        self.resize(520, 560)
         self.setModal(False)  # Modeless 창으로 메인 창 상호작용 허용
 
         self._init_ui()
@@ -192,7 +192,7 @@ class SettingsWindow(QDialog):
         layout.addLayout(bottom_layout)
 
     def refresh_status(self) -> None:
-        """현재 쿠키 상태에 따라 라벨과 스타일을 갱신합니다."""
+        """현재 등록된 네이버 로그인 쿠키 상태에 따라 라벨과 스타일을 갱신합니다."""
         from chzzk_downloader.core.cookie_manager import (
             SessionStatus,
             get_last_session_status,
