@@ -37,6 +37,7 @@ chzzk_downloader/
 ├── tests/                             # 통합/단위 테스트 스위트 (260+ 테스트)
 │   ├── conftest.py                    # QtWebEngine 선행 import 필수 설정
 │   └── unit/                          # TaskManager, Worker 단위/동시성 테스트
+├── .agents/skills/                    # [스킬 매뉴얼] 프로젝트 전용 자동화 스킬 (quick-verify 등)
 ├── reports/                           # [산출물] 설계·트레이드오프 학습용 HTML 보고서 (.gitignore 격리)
 └── tools/preview_ui_feedbacks.py      # UI 피드백 쇼케이스 직접 실행기
 ```
