@@ -90,6 +90,25 @@ def test_extract_vod_info_success():
         assert f1.url == "https://example.com/1080p.m3u8"
 
 
+def test_extract_vod_info_parses_live_open_date_with_hours_and_minutes():
+    """live_open_date 문자열(YYYY-MM-DD HH:MM:SS)에서 초를 제외하고 시:분까지 추출하는지 검증."""
+    mock_data = {
+        "id": "15368883",
+        "title": "잠시 에반게리온 분석방",
+        "uploader": "소풍왔니",
+        "live_open_date": "2026-09-25 10:32:44",
+        "formats": [],
+    }
+
+    mock_ydl = MagicMock()
+    mock_ydl.extract_info.return_value = mock_data
+    mock_ydl.__enter__.return_value = mock_ydl
+
+    with patch("yt_dlp.YoutubeDL", return_value=mock_ydl):
+        info = extract_vod_info("https://chzzk.naver.com/video/15368883")
+        assert info.live_open_date == "2026-09-25 10:32"
+
+
 def test_extract_vod_info_fallback_channel_and_defaults():
     """channel 누락 시 uploader 사용 및 기본값 처리가 올바른지 검증."""
     mock_data = {

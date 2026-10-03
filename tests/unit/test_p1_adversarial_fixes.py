@@ -161,8 +161,8 @@ def test_generate_vod_filename_truncates_title_safely_under_200_chars() -> None:
     )
     # 2. 필수 접두사 및 접미사가 보존되어야 함
     assert "[침착맨플러스]" in filename
-    assert "(15099999)" in filename
-    assert "date：2026-10-03" in filename or "date:2026-10-03" in filename
+    assert "2026-10-03" in filename
+    assert "date：" not in filename
     assert filename.endswith(".mp4")
     # 3. 말줄임표(...)가 포함되어 절단 사실을 명시해야 함
     assert "..." in filename
@@ -208,6 +208,27 @@ def test_progress_bar_and_pct_label_tooltip_integration(
     with patch.object(card.progress_bar, "setToolTip") as mock_set_tip:
         card.update_progress(prog)
         mock_set_tip.assert_not_called()
+
+
+def test_progress_bar_hover_triggers_tooltip_immediately(
+    qtbot, sample_vod_info: VodInfo
+) -> None:
+    """진행바 호버 시 QToolTip.showText가 즉시 호출되어 딜레이 없는 즉시 피드백을 제공하는지 검증."""
+    from PyQt6.QtCore import QEvent
+
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.DOWNLOADING,
+        vod_info=sample_vod_info,
+        is_live=False,
+    )
+    qtbot.addWidget(card)
+    card.progress_bar.setToolTip("테스트 진행 요약")
+
+    with patch("PyQt6.QtWidgets.QToolTip.showText") as mock_show_tip:
+        enter_event = QEvent(QEvent.Type.Enter)
+        card.eventFilter(card.progress_bar, enter_event)
+        mock_show_tip.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

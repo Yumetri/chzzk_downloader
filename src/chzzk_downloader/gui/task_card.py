@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
+    QCursor,
     QEnterEvent,
     QHideEvent,
     QPainter,
@@ -27,6 +28,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -599,10 +601,13 @@ class TaskCardWidget(QFrame):
             "QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }"
         )
 
+        self.progress_bar.installEventFilter(self)
+
         self.pct_label = QLabel("0%", self.vod_downloading_container)
         self.pct_label.setStyleSheet(
             "color: #d1d5db; font-size: 11px; min-width: 24px;"
         )
+        self.pct_label.installEventFilter(self)
 
         vod_downloading_layout.addWidget(self.vod_chzzk_badge)
         vod_downloading_layout.addWidget(self.stop_btn)
@@ -826,6 +831,18 @@ class TaskCardWidget(QFrame):
     def leaveEvent(self, event: QEvent | None) -> None:  # noqa: N802
         super().leaveEvent(event)
         self._show_hover_toolbar(False)
+
+    def eventFilter(  # noqa: N802
+        self, watched: QObject | None, event: QEvent | None
+    ) -> bool:
+        if event is not None and watched in (self.progress_bar, self.pct_label):
+            if event.type() == QEvent.Type.Enter:
+                tip = self.progress_bar.toolTip()
+                if tip:
+                    QToolTip.showText(QCursor.pos(), tip, self.progress_bar)
+            elif event.type() == QEvent.Type.Leave:
+                QToolTip.hideText()
+        return super().eventFilter(watched, event)
 
     def _detach_thumb_loader(self) -> None:
         """실행 중인 썸네일 로더 스레드를 안전하게 분리하여 백그라운드 종료를 대기하도록 보존합니다."""
@@ -1176,8 +1193,12 @@ class TaskCardWidget(QFrame):
             if tip_text:
                 if self.progress_bar.toolTip() != tip_text:
                     self.progress_bar.setToolTip(tip_text)
-                if hasattr(self, "pct_label") and self.pct_label.toolTip() != tip_text:
+                if self.pct_label.toolTip() != tip_text:
                     self.pct_label.setToolTip(tip_text)
+                if QToolTip.isVisible() and (
+                    self.progress_bar.underMouse() or self.pct_label.underMouse()
+                ):
+                    QToolTip.showText(QCursor.pos(), tip_text, self.progress_bar)
 
             self.elapsed_label.setText(progress.elapsed_str or "00:00")
 

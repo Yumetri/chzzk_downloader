@@ -85,8 +85,9 @@ def test_generate_vod_filename_with_and_without_live_date():
         live_open_date="2024-05-06",
     )
     name1 = generate_vod_filename(info_with_date, ext=".mp4")
-    assert "date：2024-05-06" in name1
-    assert "스트리머A" in name1
+    assert "2024-05-06" in name1
+    assert "date：" not in name1
+    assert name1 == "[스트리머A] 2024-05-06 테스트： 라이브 (12345).mp4"
 
     info_without_date = VodInfo(
         video_no="67890",
@@ -96,6 +97,20 @@ def test_generate_vod_filename_with_and_without_live_date():
     )
     name2 = generate_vod_filename(info_without_date, ext=".ts")
     assert name2 == "[스트리머B] 일반 영상 (67890).ts"
+
+
+def test_generate_vod_filename_with_datetime_hours_and_minutes():
+    """live_open_date에 날짜와 시:분이 포함된 경우 [{streamer}] YYYY-MM-DD HH：MM {title} ({videoNo}) 명명 검증."""
+    info = VodInfo(
+        video_no="15368883",
+        video_title="잠시 에반게리온 분석방",
+        channel_name="소풍왔니",
+        live_open_date="2026-09-25 10:32",
+    )
+    name = generate_vod_filename(info, ext=".mp4")
+    assert name == "[소풍왔니] 2026-09-25 10：32 잠시 에반게리온 분석방 (15368883).mp4"
+    assert "date：" not in name
+    assert ";" not in name
 
 
 def test_resolve_duplicate_filename(tmp_path):

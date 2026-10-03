@@ -44,7 +44,7 @@ def generate_vod_filename(vod_info: VodInfo, ext: str = ".mp4") -> str:
     """VOD 정보와 확장자를 바탕으로 표준 저장 파일명을 생성합니다.
 
     명명 규칙:
-      - 라이브일시 확인 시: [{streamer}] date:{liveOpenDate}; {title} ({videoNo}){ext}
+      - 라이브일시 확인 시: [{streamer}] {liveOpenDateTime} {title} ({videoNo}){ext}
       - 일반 VOD: [{streamer}] {title} ({videoNo}){ext}
       - 콜론은 전각 콜론(：)으로 변환
       - stem 길이가 200자를 초과할 경우 핵심 메타데이터(스트리머, 날짜, 번호)를 보존하고 제목을 안전하게 절단(...)
@@ -62,7 +62,7 @@ def generate_vod_filename(vod_info: VodInfo, ext: str = ".mp4") -> str:
     sanitized_date = ""
     if vod_info.live_open_date:
         sanitized_date = sanitize_filename(vod_info.live_open_date)
-        prefix = f"[{sanitized_streamer}] date：{sanitized_date}; "
+        prefix = f"[{sanitized_streamer}] {sanitized_date} "
     else:
         prefix = f"[{sanitized_streamer}] "
     suffix = f" ({sanitized_video_no})"
@@ -81,7 +81,7 @@ def generate_vod_filename(vod_info: VodInfo, ext: str = ".mp4") -> str:
             trimmed_streamer = sanitized_streamer[:-overflow].rstrip(" .") + "..."
             if vod_info.live_open_date:
                 sanitized_stem = (
-                    f"[{trimmed_streamer}] date：{sanitized_date}; {suffix.lstrip()}"
+                    f"[{trimmed_streamer}] {sanitized_date} {suffix.lstrip()}"
                 )
             else:
                 sanitized_stem = f"[{trimmed_streamer}]{suffix}"
