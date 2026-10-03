@@ -61,15 +61,13 @@ def _delete_file_safely(file_path: Path | None) -> bool:
     if file_path.is_file():
         targets.append(file_path)
 
-    # yt-dlp 임시 파일 (.part, .ytdl 등) 함께 탐색
-    parent_dir = file_path.parent
-    if parent_dir.exists() and parent_dir.is_dir():
-        try:
-            for extra in parent_dir.glob(f"{stem}*"):
-                if extra.is_file() and extra not in targets:
-                    targets.append(extra)
-        except Exception:
-            pass
+    # yt-dlp 임시 파일 (.part, .ytdl 등) 정확한 타깃 경로만 추가 (이웃 파일 오삭제 방지)
+    part_file = Path(str(file_path) + ".part")
+    if part_file.is_file() and part_file not in targets:
+        targets.append(part_file)
+    ytdl_file = Path(str(file_path) + ".ytdl")
+    if ytdl_file.is_file() and ytdl_file not in targets:
+        targets.append(ytdl_file)
 
     if not targets:
         # 삭제할 본체 파일도, 임시 파일도 이미 디스크에 없음 (외부 선제 삭제 등 정리 완료)
