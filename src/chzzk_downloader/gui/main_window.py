@@ -1,5 +1,6 @@
 """메인 윈도우 모듈."""
 
+import html
 from pathlib import Path
 from typing import Any
 
@@ -600,9 +601,10 @@ class MainWindow(QMainWindow):
         self.task_list_widget.add_task_card(card)
 
         # 정상 요청 시: 반투명 검은색 오버레이에 +(파란색) [URL(흰색)] 토스트 노출 후 2초 뒤 자동 소멸
+        safe_url = html.escape(raw_url)
         message = (
             f'<span style="color: #3b82f6; font-weight: bold; font-size: 14px;">+</span> '
-            f'<span style="color: #ffffff;">{raw_url}</span>'
+            f'<span style="color: #ffffff;">{safe_url}</span>'
         )
         self.toast.show_toast(
             message,
@@ -676,8 +678,9 @@ class MainWindow(QMainWindow):
 
     def _on_download_blocked(self, reason: str) -> None:
         """다운로드 시작 차단 시 경고 토스트를 표시합니다 (T0110)."""
+        safe_reason = html.escape(reason)
         self.toast.show_toast(
-            f'<span style="color: #f59e0b;">⚠️</span> {reason}',
+            f'<span style="color: #f59e0b;">⚠️</span> {safe_reason}',
             ToastType.WARNING,
             auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
         )
@@ -832,9 +835,10 @@ class MainWindow(QMainWindow):
         card.set_completed(final_file_path)
 
         file_name = Path(final_file_path).name if final_file_path else task_id
+        safe_file_name = html.escape(file_name)
         toast_msg = (
             f'<span style="color: #10b981; font-weight: bold; font-size: 14px;">✓</span> '
-            f'<span style="color: #ffffff;">{file_name}</span>'
+            f'<span style="color: #ffffff;">{safe_file_name}</span>'
         )
         self.toast.show_toast(
             toast_msg,
@@ -844,9 +848,10 @@ class MainWindow(QMainWindow):
 
     def show_file_deleted_toast(self, name_or_url: str) -> None:
         """T08: 동영상 파일 삭제 시 반투명 알약형 삭제 토스트를 노출합니다 (2.5초 자동 소멸)."""
+        safe_name = html.escape(name_or_url)
         toast_msg = (
             f'<span style="color: #ef4444; font-size: 14px;">🗑</span> '
-            f'<span style="color: #ffffff;">{name_or_url}</span>'
+            f'<span style="color: #ffffff;">{safe_name}</span>'
         )
         self.toast.show_toast(
             toast_msg,

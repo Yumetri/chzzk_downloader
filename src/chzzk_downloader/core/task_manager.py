@@ -301,7 +301,14 @@ class TaskManager:
                 return False
 
             curr_status = self._statuses.get(task_id)
-            if curr_status == TaskStatus.QUEUED:
+            if curr_status == TaskStatus.READY:
+                self._statuses[task_id] = TaskStatus.STOPPED
+                self._last_progress_time.pop(task_id, None)
+                events.append(
+                    ("status_changed", task_id, TaskStatus.READY, TaskStatus.STOPPED)
+                )
+                is_handled = True
+            elif curr_status == TaskStatus.QUEUED:
                 self._queue.remove(task_id)
                 self._statuses[task_id] = TaskStatus.STOPPED
                 self._last_progress_time.pop(task_id, None)

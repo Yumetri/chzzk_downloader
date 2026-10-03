@@ -26,3 +26,6 @@ Desktop.ini
 
 # Generated Architecture & Diff Reports (Untracked)
 reports/
+
+# Default Download Directory (Untracked)
+chzzk_downloaded/

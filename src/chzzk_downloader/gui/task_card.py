@@ -1,12 +1,22 @@
 """다운로드 작업 카드(Task Card) 위젯 모듈."""
 
+import html
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QEnterEvent, QPainter, QPaintEvent, QPen, QPixmap
+from PyQt6.QtGui import (
+    QColor,
+    QEnterEvent,
+    QHideEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+    QShowEvent,
+)
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -174,6 +184,7 @@ class SpinnerWidget(QWidget):
         self._color = color
         self.setFixedSize(size, size)
         self._angle = 0
+        self._was_running = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._rotate)
 
@@ -182,10 +193,12 @@ class SpinnerWidget(QWidget):
         self.update()
 
     def start(self) -> None:
+        self._was_running = True
         if not self._timer.isActive():
             self._timer.start(50)
 
     def stop(self) -> None:
+        self._was_running = False
         if self._timer.isActive():
             self._timer.stop()
         self._angle = 0
@@ -201,6 +214,18 @@ class SpinnerWidget(QWidget):
         span = 270 * 16
         r = (self._size - 3) / 2
         painter.drawArc(int(-r), int(-r), int(2 * r), int(2 * r), 0, span)
+
+    def hideEvent(self, event: QHideEvent | None) -> None:  # noqa: N802
+        # 위젯 가시성이 숨겨질 때 CPU 낭비 방지를 위해 타이머만 일시 정지 (동작 의도 _was_running은 유지)
+        if self._timer.isActive():
+            self._timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event: QShowEvent | None) -> None:  # noqa: N802
+        # 위젯이 다시 화면에 노출될 때 이전 동작 중이었으면 타이머를 대칭적으로 재개
+        if getattr(self, "_was_running", False) and not self._timer.isActive():
+            self._timer.start(50)
+        super().showEvent(event)
 
 
 def format_duration(seconds: int) -> str:
@@ -1235,9 +1260,10 @@ class TaskCardWidget(QFrame):
         if main_win and hasattr(main_win, "show_file_deleted_toast"):
             main_win.show_file_deleted_toast(filename_str)
         elif main_win and hasattr(main_win, "toast"):
+            safe_name = html.escape(filename_str)
             toast_html = (
                 f'<span style="color: #ef4444; font-size: 14px;">🗑</span> '
-                f'<span style="color: #ffffff;">{filename_str}</span>'
+                f'<span style="color: #ffffff;">{safe_name}</span>'
             )
             main_win.toast.show_toast(toast_html, auto_dismiss_ms=2500)
 
