@@ -318,6 +318,7 @@ class TaskCardWidget(QFrame):
         self.custom_download_dir: Path | None = None
         self.target_path: Path | None = None
         self.selected_quality: str = ""
+        self.last_progress: TaskProgress | None = None
 
         self._init_ui()
         if self.vod_info:
@@ -1160,6 +1161,7 @@ class TaskCardWidget(QFrame):
         """다운로드/녹화 진행 상황을 실시간으로 갱신합니다."""
         if self.status != TaskStatus.DOWNLOADING:
             return
+        self.last_progress = progress
         self.status_label.hide()
         if hasattr(self, "downloading_metrics_widget"):
             self.downloading_metrics_widget.show()
@@ -1535,7 +1537,30 @@ class TaskCardWidget(QFrame):
                 self.vod_metrics_widget.hide()
             self.status_label.hide()
 
-            dur_str = format_duration(self.vod_info.duration) if self.vod_info else ""
+            if self.is_live:
+                dur_str = (
+                    self.last_progress.elapsed_str
+                    if self.last_progress and self.last_progress.elapsed_str
+                    else "00:00"
+                )
+            elif (
+                self.last_progress
+                and self.last_progress.percentage > 0
+                and self.vod_info
+                and self.vod_info.duration > 0
+            ):
+                actual_sec = int(
+                    self.vod_info.duration * (self.last_progress.percentage / 100.0)
+                )
+                dur_str = format_duration(actual_sec)
+            elif self.last_progress and self.last_progress.elapsed_str:
+                dur_str = self.last_progress.elapsed_str
+            else:
+                dur_str = (
+                    format_duration(self.vod_info.duration)
+                    if self.vod_info
+                    else "00:00"
+                )
             file_size_str = ""
             target = (
                 getattr(self, "final_file_path", None)
