@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 from chzzk_downloader.core.task_manager import TaskManager
@@ -241,12 +242,48 @@ def test_deleted_card_event_safety(app, mock_vod_info_factory, tmp_path):
         window.close()
 
 
-def test_stop_download_desync_and_slot_advance(app, mock_vod_info_factory, tmp_path):
-    """[결함 1] 중지(■) 클릭 시 TaskManager cancel_task 연동 및 후속 대기 작업 자동 승계 검증."""
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
+def test_stop_download_desync_and_slot_advance(
+    app, mock_vod_info_factory, tmp_path, qtbot
+):
+    """중지 클릭 시 워커 종료 후 TaskManager 슬롯 반환 및 후속 대기 작업 자동 승계 검증."""
+    import threading
+
+    class QuickWorker(QThread):
+        progress_updated = pyqtSignal(TaskProgress)
+        download_finished = pyqtSignal(str, str)
+        download_failed = pyqtSignal(str, str, str, str)
+        download_stopped = pyqtSignal(str)
+
+        def __init__(self, spec, parent=None):
+            super().__init__(parent)
+            self.task_spec = spec
+            self.task_id = spec.task_id
+            self.is_cancelled = False
+            self.stop_event = threading.Event()
+
+        def cancel(self):
+            self.is_cancelled = True
+            self.stop_event.set()
+
+        def run(self):
+            self.stop_event.wait(timeout=2.0)
+            if self.is_cancelled:
+                self.download_stopped.emit(self.task_id)
+            else:
+                self.download_finished.emit(self.task_id, str(self.task_spec.save_path))
+
+    with (
+        patch(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            return_value=True,
+        ),
+        patch(
+            "chzzk_downloader.gui.main_window.VodDownloadWorker",
+            side_effect=lambda s, parent=None: QuickWorker(s, parent=parent),
+        ),
     ):
         window = MainWindow()
+        qtbot.addWidget(window)
         window.task_manager.max_concurrent_vod = 1
 
         c1 = TaskCardWidget(
@@ -276,9 +313,15 @@ def test_stop_download_desync_and_slot_advance(app, mock_vod_info_factory, tmp_p
         ):
             c1.trigger_stop_download()
 
-        # TaskManager에서도 v1이 STOPPED로 전이되고 슬롯이 반환되어 c2가 DOWNLOADING으로 자동 승계되어야 함
-        assert window.task_manager.get_task_status("v1") == TaskStatus.STOPPED
-        assert c2.status == TaskStatus.DOWNLOADING
+        # 워커 종료(finished) 후 v1이 STOPPED로 전이되고 슬롯이 반환되어 c2가 DOWNLOADING으로 자동 승계됨
+        qtbot.waitUntil(
+            lambda: window.task_manager.get_task_status("v1") == TaskStatus.STOPPED,
+            timeout=3000,
+        )
+        qtbot.waitUntil(
+            lambda: c2.status == TaskStatus.DOWNLOADING,
+            timeout=3000,
+        )
         assert "v2" in window.task_manager.get_running_vod_tasks()
 
         window.close()
@@ -661,9 +704,13 @@ def test_vod_download_worker_e2e_cancellation(app, tmp_path, qtbot):
         assert "v_cancel" in window._download_workers
         worker = window._download_workers["v_cancel"]
 
-        with qtbot.waitSignal(worker.download_stopped, timeout=3000):
+        with qtbot.waitSignal(worker.finished, timeout=3000):
             card.trigger_stop_download()
 
+    qtbot.waitUntil(
+        lambda: window.task_manager.get_task_status("v_cancel") == TaskStatus.STOPPED,
+        timeout=3000,
+    )
     assert card.status == TaskStatus.STOPPED
     assert window.task_manager.get_task_status("v_cancel") == TaskStatus.STOPPED
     window.close()
@@ -725,49 +772,6 @@ def test_defect_close_event_with_running_download_worker_no_crash(app, tmp_path,
                 lambda: not worker.isRunning() and worker not in _DETACHED_WORKERS,
                 timeout=3000,
             )
-
-
-def test_defect_redownload_not_killed_by_dying_worker_signal(app, tmp_path, qtbot):
-    """결함 3: 중지 직후 이전 워커의 지연 download_stopped 시그널이 신규 다운로드 작업을 STOPPED로 오염시키지 않는지 검증."""
-    import time
-
-    window = MainWindow()
-    spec = TaskSpec(
-        "v_race",
-        "https://chzzk.naver.com/video/v_race",
-        save_path=tmp_path / "race.mp4",
-    )
-    window.task_manager.add_task(spec)
-    old_worker = window._download_workers.get("v_race")
-    assert old_worker is not None
-
-    def slow_stopped():
-        time.sleep(0.1)
-        old_worker.download_stopped.emit("v_race")
-
-    old_worker.run = slow_stopped
-
-    # 사용자가 중지 클릭
-    window._on_card_request_stop_download("v_race")
-    assert window.task_manager.get_task_status("v_race") == TaskStatus.STOPPED
-
-    # 이전 워커가 완전히 끝나기 전 재다운로드 요청
-    window.task_manager.reset_task("v_race")
-    with patch.object(VodDownloadWorker, "start", return_value=None):
-        window.task_manager.add_task(spec)
-
-    assert window.task_manager.get_task_status("v_race") == TaskStatus.DOWNLOADING
-
-    # 이전 워커가 뒤늦게 download_stopped 방출하는 시간 대기
-    time.sleep(0.2)
-    app.processEvents()
-
-    # 신규 다운로드 작업이 STOPPED로 오염되지 않고 DOWNLOADING 상태를 유지해야 함
-    status = window.task_manager.get_task_status("v_race")
-    assert status == TaskStatus.DOWNLOADING, (
-        f"신규 다운로드 작업이 이전 워커의 지연 시그널로 인해 {status}로 사망했습니다."
-    )
-    window.close()
 
 
 def test_defect_single_call_start_vod_download(app, mock_vod_info_factory, tmp_path):

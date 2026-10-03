@@ -144,12 +144,12 @@ def test_settings_window_choose_folder_success(qtbot, test_settings_env, tmp_pat
         "PyQt6.QtWidgets.QFileDialog.getExistingDirectory",
         return_value=str(target_dir),
     ):
-        window.folder_btn.click()
+        window._on_choose_folder()
 
-    # UI 및 저장된 설정 확인
     assert window.folder_input.text() == str(target_dir.resolve())
     current = get_current_settings()
     assert current.download_dir.resolve() == target_dir.resolve()
+    window.close()
 
 
 def test_settings_window_choose_folder_invalid_warning(
@@ -170,13 +170,14 @@ def test_settings_window_choose_folder_invalid_warning(
         return_value=str(tmp_path / "unwritable"),
     ):
         with patch.object(QMessageBox, "warning") as mock_warn:
-            window.folder_btn.click()
+            window._on_choose_folder()
             mock_warn.assert_called_once()
-            assert "폴더 오류" in mock_warn.call_args[0][1]
+            assert mock_warn.call_args[0][1] == "Chzzk Downloader"
 
     # 이전 유효 경로 유지 확인
     assert Path(window.folder_input.text()).resolve() == orig_dir
     assert get_current_settings().download_dir.resolve() == orig_dir
+    window.close()
 
 
 def test_settings_window_quality_and_ext_change_auto_saves(qtbot, test_settings_env):
@@ -266,10 +267,11 @@ def test_settings_window_folder_dialog_cancelled_or_error_maintains_path(
         with patch.object(QMessageBox, "warning") as mock_warn:
             window.folder_btn.click()
             mock_warn.assert_called_once()
-            assert "폴더 오류" in mock_warn.call_args[0][1]
+            assert mock_warn.call_args[0][1] == "Chzzk Downloader"
 
         # 경로가 유지되는지 확인
         assert Path(window.folder_input.text()).resolve() == orig_dir
+        window.close()
 
 
 def test_validate_download_dir_network_timeout_and_cleanup(tmp_path):

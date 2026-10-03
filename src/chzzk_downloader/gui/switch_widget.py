@@ -38,7 +38,10 @@ class SwitchWidget(QWidget):
         return QSize(40, 22)
 
     def paintEvent(self, event: QPaintEvent | None) -> None:  # noqa: N802
-        painter = QPainter(self)
+        try:
+            painter = QPainter(self)
+        except RuntimeError:
+            return
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         width = self.width()

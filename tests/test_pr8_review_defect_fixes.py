@@ -146,7 +146,7 @@ def test_clear_cookies_failure_handling(setup_test_cookie_path, qtbot):
             with patch.object(QMessageBox, "warning") as mock_warning:
                 settings_win._on_clear_clicked()
                 mock_warning.assert_called_once()
-                assert "초기화 실패" in mock_warning.call_args[0][1]
+                assert mock_warning.call_args[0][1] == "Chzzk Downloader"
 
 
 # ---------------------------------------------------------------------------

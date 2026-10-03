@@ -162,13 +162,35 @@ class TaskInfoWindow(QWidget):
         self._init_ui()
 
     def refresh_info(self) -> None:
-        """카드 최신 상태로 텍스트를 새로고침합니다."""
-        self.text_edit.setPlainText(format_task_info(self.card))
+        """카드 최신 상태로 텍스트를 새로고침합니다 (C++ 파괴 방어)."""
+        from PyQt6 import sip
+
+        try:
+            if (
+                hasattr(self, "card")
+                and self.card is not None
+                and not sip.isdeleted(self.card)
+                and not getattr(self.card, "is_deleted", False)
+            ):
+                self.text_edit.setPlainText(format_task_info(self.card))
+        except (RuntimeError, ReferenceError):
+            pass
 
     def closeEvent(self, event: QCloseEvent | None) -> None:  # noqa: N802
-        """창이 닫힐 때 카드의 창 참조를 초기화합니다."""
-        if hasattr(self.card, "_info_win"):
-            self.card._info_win = None
+        """창이 닫힐 때 카드의 창 참조를 안전하게 초기화합니다 (C++ 객체 파괴 방어)."""
+        from PyQt6 import sip
+
+        try:
+            if (
+                hasattr(self, "card")
+                and self.card is not None
+                and not sip.isdeleted(self.card)
+                and not getattr(self.card, "is_deleted", False)
+            ):
+                if hasattr(self.card, "_info_win"):
+                    self.card._info_win = None
+        except (RuntimeError, ReferenceError):
+            pass
         super().closeEvent(event)
 
     def _init_ui(self) -> None:

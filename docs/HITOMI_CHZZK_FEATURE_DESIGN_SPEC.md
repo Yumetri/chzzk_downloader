@@ -1,5 +1,11 @@
 # Hitomi Downloader 기반 치지직 핵심 기능 및 UI/UX 디자인 규격서
-> **목적**: `hitomi_downloader_GUI.exe`의 방대한 기능 중 **치지직(Chzzk) 실시간 녹화, VOD 다운로드, 자동 녹화 모니터링, 알림 체계**와 **UI/UX 디자인·설정 사양**만을 정밀 추출하여, AI Agent가 즉시 이해하고 구현에 착수할 수 있도록 정형화한 개발 참조 규격서입니다. (백엔드 기본 아키텍처는 `DOWNLOADER_GUI_ARCHITECTURE.md` 참조)
+
+> [!WARNING]
+> **[AI 에이전트 주의: 미래 기능 기획/로드맵 포함 문서]**  
+> 본 문서는 Hitomi Downloader를 벤치마킹한 전체 기획 규격서입니다.  
+> **현재 구현 스코프**: **치지직 VOD 다운로드 전용** (URL 파싱, 메타데이터 추출, 최고화질 다운로드, fMP4/FFmpeg Muxing, 네이버 쿠키 세션).  
+> **향후 로드맵**: 실시간 라이브 자동 녹화, QTimer 채널 감시 폴링, 시스템 트레이 백그라운드 구동, 11개 단축키 체계 등은 아직 구현되지 않은 기획 사양이므로, 현재 코드에 이미 구현되어 있다고 가정(환각)하지 마십시오.  
+> 기본 아키텍처 및 코딩 규칙의 단일 진실 공급원(SSOT)은 [AGENTS.md](file:///c:/Users/이홍원/Desktop/code_training/chzzk_downloader/AGENTS.md)입니다.
 
 ---
 
@@ -247,60 +253,65 @@ Hitomi Downloader와 비교하여 본 치지직 다운로더가 구현해야 할
 
 ---
 
-## 6. AI Agent 구현 체크리스트 및 데이터 모델 규격
+## 6. 핵심 데이터 모델 규격 (SSOT: `src/chzzk_downloader/core/task_models.py`)
 
-Agent가 코드를 작성할 때 즉시 임포트하여 사용할 수 있는 데이터 모델 및 상태 Enum 정의입니다.
+실제 구현된 9대 생명주기 상태(`TaskStatus`) 및 진행률, 명세 데이터클래스입니다.
 
 ```python
-from enum import Enum, auto
-from dataclasses import dataclass, field
-from typing import List, Optional
-
-
-class TaskType(Enum):
-    VOD = auto()
-    LIVE = auto()
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
 
 
 class TaskStatus(Enum):
-    QUEUED = auto()
-    ANALYZING = auto()
-    READY = auto()
-    DOWNLOADING = auto()
-    RECORDING = auto()  # 실시간 라이브 녹화 중
-    STOPPED = auto()
-    COMPLETED = auto()
-    FAILED_INVALID = auto()
-    FAILED_LOGIN_REQUIRED = auto()
-    FAILED_DOWNLOAD = auto()
+    """작업 9대 생명주기 상태 코드 (RFC #87 C01 ~ C09)."""
+
+    QUEUED = "QUEUED"  # C09: 대기 중 (창구 만석으로 대기열에서 차례를 기다림)
+    ANALYZING = "ANALYZING"  # C01: URL 분석 중
+    READY = "READY"  # C02: 준비 완료 (다운로드 옵션 확인 및 시작 대기)
+    DOWNLOADING = "DOWNLOADING"  # C03: 다운로드/녹화 실행 중
+    STOPPED = "STOPPED"  # C04: 중지됨 (재개 불가 완결 상태)
+    FAILED_INVALID = "FAILED_INVALID"  # C05: 링크/URL 오류
+    FAILED_LOGIN_REQUIRED = "FAILED_LOGIN_REQUIRED"  # C06: 성인인증/로그인 필요
+    FAILED_DOWNLOAD = "FAILED_DOWNLOAD"  # C07: 다운로드/네트워크 실패
+    COMPLETED = "COMPLETED"  # C08: 다운로드 및 검증 완료
 
 
-@dataclass
+@dataclass(frozen=True)
 class TaskProgress:
-    total_bytes: int = 0
+    """실시간 다운로드/녹화 진행 정보 (불변 객체)."""
+
+    task_id: str
     downloaded_bytes: int = 0
-    speed_bytes_per_sec: float = 0.0
-    elapsed_seconds: float = 0.0
-    eta_seconds: Optional[float] = None
-    percent: float = 0.0
+    total_bytes: int = 0
+    percentage: float = 0.0  # 0.0 ~ 100.0
+    speed_bytes_sec: float = 0.0  # 초당 바이트 수
+    speed_str: str = ""  # 예: "15.4 MB/s"
+    eta_seconds: int = 0  # 남은 시간 (초)
+    eta_str: str = ""  # 예: "00:03:25"
 
 
-@dataclass
-class LiveStreamerEntry:
-    channel_id: str
-    streamer_name: str
-    channel_url: str
-    is_paused: bool = False
-    preferred_quality: str = "best"
-    thumbnail_data: Optional[bytes] = None
-    last_status: str = "OFFLINE"
-    last_check_timestamp: float = 0.0
+@dataclass(frozen=True)
+class TaskSpec:
+    """작업 생성 및 실행 명세 (불변 객체)."""
+
+    task_id: str
+    video_url: str
+    is_live: bool = False
+    title: str = ""
+    streamer: str = ""
+    selected_quality: str = ""
+    selected_ext: str = "mp4"
+    save_path: Path | str = ""
 ```
+
+> [!NOTE]
+> `LiveStreamerEntry` (채널 자동 모니터링 엔트리)는 라이브 녹화 티켓 구현 시 `core/`에 추가될 예정인 로드맵 모델입니다.
 
 ---
 
 ## 7. 연계 문서 및 가이드라인
-- **백엔드 아키텍처 상세**: [DOWNLOADER_GUI_ARCHITECTURE.md](file:///c:/Users/%EC%9D%B4%ED%99%8D%EC%9B%90/Desktop/chzzk_downloader/docs/DOWNLOADER_GUI_ARCHITECTURE.md)
-- **UI 피드백 및 모달/토스트 카탈로그**: [UI_FEEDBACK_CATALOG.md](file:///c:/Users/%EC%9D%B4%ED%99%8D%EC%9B%90/Desktop/chzzk_downloader/docs/UI_FEEDBACK_CATALOG.md)
-- **티켓 및 작업 관리**: [GitHub Issues (Yumetri/chzzk_downloader/issues)](https://github.com/Yumetri/chzzk_downloader/issues)
+- **중앙 개발 관제탑 및 아키텍처 SSOT**: [AGENTS.md](file:///c:/Users/이홍원/Desktop/code_training/chzzk_downloader/AGENTS.md)
+- **UI 피드백 및 모달/토스트 카탈로그**: [UI_FEEDBACK_CATALOG.md](file:///c:/Users/이홍원/Desktop/code_training/chzzk_downloader/docs/UI_FEEDBACK_CATALOG.md)
+- **무맥락 적대적 검증 가이드**: [AI_ADVERSARIAL_VALIDATOR_GUIDE.md](file:///c:/Users/이홍원/Desktop/code_training/chzzk_downloader/docs/AI_ADVERSARIAL_VALIDATOR_GUIDE.md)
 

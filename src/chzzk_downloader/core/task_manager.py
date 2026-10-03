@@ -14,6 +14,7 @@ import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from chzzk_downloader.core.errors import classify_error
 from chzzk_downloader.core.task_models import TaskProgress, TaskSpec, TaskStatus
 from chzzk_downloader.core.task_queue import TaskQueue
 
@@ -189,30 +190,7 @@ class TaskManager:
     ) -> bool:
         """작업 실패를 보고하고 에러 유형에 따른 세분화된 상태 매핑 및 원자적 슬롯 승계를 수행합니다."""
         events: list[tuple] = []
-        err_lower = (err_type + " " + msg).lower()
-
-        # 세분화된 실패 상태 매핑
-        if any(
-            k in err_lower
-            for k in (
-                "login",
-                "adult",
-                "성인",
-                "로그인",
-                "인증",
-                "401",
-                "403",
-                "unauthorized",
-                "forbidden",
-            )
-        ):
-            new_status = TaskStatus.FAILED_LOGIN_REQUIRED
-        elif any(
-            k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")
-        ):
-            new_status = TaskStatus.FAILED_INVALID
-        else:
-            new_status = TaskStatus.FAILED_DOWNLOAD
+        new_status = classify_error(exc_type=err_type, msg=msg)
 
         with self._lock:
             if task_id not in self._specs:
@@ -289,9 +267,10 @@ class TaskManager:
         self.signals.task_progress_updated.emit(task_id, progress)
 
     def cancel_task(self, task_id: str) -> bool:
-        """대기열 작업 취소 또는 실행 중인 작업의 안전 중지를 처리합니다 (STOPPED 전이).
+        """실행 중인(DOWNLOADING) 다운로드 또는 녹화 작업을 안전하게 중지합니다 (STOPPED 전이 및 슬롯 반환).
 
-        - 주의: cancel_task는 작업을 중지(STOPPED)시키는 메서드이며, 영구 삭제(removed)는 remove_task가 담당합니다.
+        - 대기 중인(QUEUED) 또는 준비(READY) 상태의 작업은 파일이 없으므로 STOPPED 상태가 아닌
+          remove_task를 통해 대기열/목록에서 완전히 제외되어야 합니다.
         """
         events: list[tuple] = []
         is_handled = False
@@ -301,15 +280,7 @@ class TaskManager:
                 return False
 
             curr_status = self._statuses.get(task_id)
-            if curr_status == TaskStatus.QUEUED:
-                self._queue.remove(task_id)
-                self._statuses[task_id] = TaskStatus.STOPPED
-                self._last_progress_time.pop(task_id, None)
-                events.append(
-                    ("status_changed", task_id, TaskStatus.QUEUED, TaskStatus.STOPPED)
-                )
-                is_handled = True
-            elif curr_status == TaskStatus.DOWNLOADING:
+            if curr_status == TaskStatus.DOWNLOADING:
                 self._running_vod_ids.discard(task_id)
                 self._running_live_ids.discard(task_id)
                 self._statuses[task_id] = TaskStatus.STOPPED

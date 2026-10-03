@@ -1,19 +1,31 @@
 """다운로드 작업 카드(Task Card) 위젯 모듈."""
 
+import html
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QEnterEvent, QPainter, QPaintEvent, QPen, QPixmap
+from PyQt6.QtGui import (
+    QColor,
+    QEnterEvent,
+    QHideEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+    QShowEvent,
+)
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -31,6 +43,92 @@ from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
 
 _DETACHED_LOADERS: set[QThread] = set()
+
+
+def _delete_file_safely(file_path: Path | None) -> bool:
+    """Windows Shell 휴지통 이동 또는 unlink를 통한 안전한 파일 삭제 (재생 중 삭제 및 임시 .part 파일 정리 지원)."""
+    if file_path is None:
+        return False
+    path_str = str(file_path).strip()
+    if not path_str or path_str in (".", "/"):
+        return False
+
+    stem = file_path.stem.strip()
+    if not stem:
+        return False
+
+    targets: list[Path] = []
+    if file_path.is_file():
+        targets.append(file_path)
+
+    # yt-dlp 임시 파일 (.part, .ytdl 등) 정확한 타깃 경로만 추가 (이웃 파일 오삭제 방지)
+    part_file = Path(str(file_path) + ".part")
+    if part_file.is_file() and part_file not in targets:
+        targets.append(part_file)
+    ytdl_file = Path(str(file_path) + ".ytdl")
+    if ytdl_file.is_file() and ytdl_file not in targets:
+        targets.append(ytdl_file)
+
+    if not targets:
+        # 삭제할 본체 파일도, 임시 파일도 이미 디스크에 없음 (외부 선제 삭제 등 정리 완료)
+        return True
+
+    import sys
+
+    success = True
+    for target in targets:
+        deleted = False
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                class SHFILEOPSTRUCTW(ctypes.Structure):
+                    _fields_ = [
+                        ("hwnd", wintypes.HWND),
+                        ("wFunc", wintypes.UINT),
+                        ("pFrom", wintypes.LPCWSTR),
+                        ("pTo", wintypes.LPCWSTR),
+                        ("fFlags", wintypes.WORD),
+                        ("fAnyOperationsAborted", wintypes.BOOL),
+                        ("hNameMappings", wintypes.LPVOID),
+                        ("lpszProgressTitle", wintypes.LPCWSTR),
+                    ]
+
+                fo_delete = 3
+                fof_allowundo = 0x0040
+                fof_noconfirmation = 0x0010
+                fof_silent = 0x0004
+                fof_noerrorui = 0x0400
+
+                p_from = str(target.resolve()) + "\0\0"
+                file_op = SHFILEOPSTRUCTW(
+                    hwnd=None,
+                    wFunc=fo_delete,
+                    pFrom=p_from,
+                    pTo=None,
+                    fFlags=fof_allowundo
+                    | fof_noconfirmation
+                    | fof_silent
+                    | fof_noerrorui,
+                    fAnyOperationsAborted=False,
+                    hNameMappings=None,
+                    lpszProgressTitle=None,
+                )
+                ret = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(file_op))
+                if ret == 0 and not file_op.fAnyOperationsAborted:
+                    deleted = True
+            except Exception:
+                pass
+
+        if not deleted:
+            try:
+                target.unlink(missing_ok=True)
+                deleted = True
+            except Exception:
+                success = False
+
+    return success
 
 
 def match_default_quality(available_qualities: list[str], target_quality: str) -> str:
@@ -73,11 +171,18 @@ def match_default_quality(available_qualities: list[str], target_quality: str) -
 class SpinnerWidget(QWidget):
     """버퍼링 회전 인디케이터 위젯."""
 
-    def __init__(self, size: int = 14, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        size: int = 14,
+        color: str = "#3b82f6",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._size = size
+        self._color = color
         self.setFixedSize(size, size)
         self._angle = 0
+        self._was_running = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._rotate)
 
@@ -86,10 +191,12 @@ class SpinnerWidget(QWidget):
         self.update()
 
     def start(self) -> None:
+        self._was_running = True
         if not self._timer.isActive():
             self._timer.start(50)
 
     def stop(self) -> None:
+        self._was_running = False
         if self._timer.isActive():
             self._timer.stop()
         self._angle = 0
@@ -98,13 +205,25 @@ class SpinnerWidget(QWidget):
     def paintEvent(self, event: QPaintEvent | None) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#3b82f6"), 2)
+        pen = QPen(QColor(self._color), 2)
         painter.setPen(pen)
         painter.translate(self._size / 2, self._size / 2)
         painter.rotate(self._angle)
         span = 270 * 16
         r = (self._size - 3) / 2
         painter.drawArc(int(-r), int(-r), int(2 * r), int(2 * r), 0, span)
+
+    def hideEvent(self, event: QHideEvent | None) -> None:  # noqa: N802
+        # 위젯 가시성이 숨겨질 때 CPU 낭비 방지를 위해 타이머만 일시 정지 (동작 의도 _was_running은 유지)
+        if self._timer.isActive():
+            self._timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event: QShowEvent | None) -> None:  # noqa: N802
+        # 위젯이 다시 화면에 노출될 때 이전 동작 중이었으면 타이머를 대칭적으로 재개
+        if getattr(self, "_was_running", False) and not self._timer.isActive():
+            self._timer.start(50)
+        super().showEvent(event)
 
 
 def format_duration(seconds: int) -> str:
@@ -167,12 +286,16 @@ class TaskCardWidget(QFrame):
         vod_info: VodInfo | None = None,
         video_no: str = "",
         task_id: str | None = None,
+        is_live: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.raw_url = raw_url
         self.status = status
         self.vod_info = vod_info
+        self.is_live = is_live
+        if vod_info and hasattr(vod_info, "is_live") and vod_info.is_live:
+            self.is_live = True
         self.video_no = (
             video_no
             or (vod_info.video_no if vod_info else "")
@@ -185,6 +308,8 @@ class TaskCardWidget(QFrame):
         self.traceback_str: str = ""
         self.final_file_path: Path | None = None
         self.is_deleted: bool = False
+        self._has_started_download: bool = status == TaskStatus.DOWNLOADING
+        self._stopped_without_file: bool = False
         self._thumb_loader: ThumbnailLoaderThread | None = None
         self._info_win: Any = None
 
@@ -212,16 +337,34 @@ class TaskCardWidget(QFrame):
         main_layout.setContentsMargins(10, 8, 10, 8)
         main_layout.setSpacing(12)
 
-        # 좌측: 썸네일 박스 (120x68px, 16:9)
-        self.thumb_label = QLabel(self)
+        # 좌측: 썸네일 박스 (120x68px, 16:9) 및 회색 회전 위젯
+        self.thumb_container = QWidget(self)
+        self.thumb_container.setFixedSize(120, 68)
+        self.thumb_container.setStyleSheet(
+            "background-color: #2a2a2a; border-radius: 4px;"
+        )
+        thumb_grid = QGridLayout(self.thumb_container)
+        thumb_grid.setContentsMargins(0, 0, 0, 0)
+        thumb_grid.setSpacing(0)
+
+        self.thumb_label = QLabel(self.thumb_container)
         self.thumb_label.setFixedSize(120, 68)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setScaledContents(True)
         self.thumb_label.setStyleSheet(
-            "background-color: #2a2a2a; color: #888888; border-radius: 4px; font-weight: bold; font-size: 12px;"
+            "background-color: transparent; color: #888888; border-radius: 4px; font-weight: bold; font-size: 12px;"
         )
         self.thumb_label.setText("VOD")
-        main_layout.addWidget(self.thumb_label)
+        thumb_grid.addWidget(self.thumb_label, 0, 0)
+
+        # 읽는 중(ANALYZING) 상태에서 빈 화면 중앙에 표시되는 회색 회전 위젯
+        self.thumb_spinner = SpinnerWidget(
+            size=24, color="#9ca3af", parent=self.thumb_container
+        )
+        self.thumb_spinner.hide()
+        thumb_grid.addWidget(self.thumb_spinner, 0, 0, Qt.AlignmentFlag.AlignCenter)
+
+        main_layout.addWidget(self.thumb_container)
 
         # 우측: 4분면 정보 영역
         info_layout = QVBoxLayout()
@@ -243,7 +386,6 @@ class TaskCardWidget(QFrame):
         self.title_label.setStyleSheet("font-size: 13px; font-weight: 600;")
         top_row.addWidget(self.title_label, stretch=1)
 
-        # 2번 위치 (우상단): 회색조 액션 아이콘 그룹 (호버 시 노출)
         # 2-1. 폴더 열기(📁) 버튼
         self.open_folder_btn = QPushButton("📁", self)
         self.open_folder_btn.setToolTip("폴더 열기")
@@ -270,7 +412,20 @@ class TaskCardWidget(QFrame):
         self.play_btn.hide()
         top_row.addWidget(self.play_btn)
 
-        # 2-3. 삭제(✕) 버튼
+        # 2-3. 파일 삭제(🗑️) 버튼 (M11 모달 연동 및 안전 삭제)
+        self.action_delete_file_btn = QPushButton("🗑️", self)
+        self.action_delete_file_btn.setToolTip("파일 삭제")
+        self.action_delete_file_btn.setFixedSize(24, 24)
+        self.action_delete_file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.action_delete_file_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #888888; border: none; font-size: 13px; }"
+            "QPushButton:hover { background-color: rgba(239, 68, 68, 0.2); color: #ef4444; border-radius: 3px; }"
+        )
+        self.action_delete_file_btn.clicked.connect(self._on_delete_file_clicked)
+        self.action_delete_file_btn.hide()
+        top_row.addWidget(self.action_delete_file_btn)
+
+        # 2-4. 삭제(✕) 버튼
         self.delete_btn = QPushButton("✕", self)
         self.delete_btn.setToolTip("목록에서 제거")
         self.delete_btn.setFixedSize(24, 24)
@@ -407,20 +562,22 @@ class TaskCardWidget(QFrame):
         ready_layout.addWidget(self.start_btn)
         self.ready_container.hide()
 
-        # 4-3. 다운로드 실행 중 컨테이너 (녹화 중… + 버퍼링 회전 + ■ 중지 버튼)
-        self.downloading_container = QWidget(self.action_container)
-        downloading_layout = QHBoxLayout(self.downloading_container)
-        downloading_layout.setContentsMargins(0, 0, 0, 0)
-        downloading_layout.setSpacing(6)
+        # 4-3. VOD 다운로드 실행 중 컨테이너 ([Z] 뱃지 + [■] 중지 + 미니멀 프로그레스바 + 정수%)
+        self.vod_downloading_container = QWidget(self.action_container)
+        vod_downloading_layout = QHBoxLayout(self.vod_downloading_container)
+        vod_downloading_layout.setContentsMargins(0, 0, 0, 0)
+        vod_downloading_layout.setSpacing(6)
 
-        self.recording_label = QLabel("녹화 중…", self.downloading_container)
-        self.recording_label.setStyleSheet(
-            "color: #ef4444; font-size: 11px; font-weight: 600;"
+        self.vod_chzzk_badge = QPushButton("Z", self.vod_downloading_container)
+        self.vod_chzzk_badge.setFixedSize(24, 22)
+        self.vod_chzzk_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.vod_chzzk_badge.setStyleSheet(
+            "QPushButton { background-color: #000000; color: #00ffa3; border: none; border-radius: 3px; font-weight: 900; font-size: 11px; padding: 0; }"
+            "QPushButton:hover { background-color: #1f2937; }"
         )
+        self.vod_chzzk_badge.clicked.connect(self._on_chzzk_badge_clicked)
 
-        self.spinner = SpinnerWidget(size=14, parent=self.downloading_container)
-
-        self.stop_btn = QPushButton("■", self.downloading_container)
+        self.stop_btn = QPushButton("■", self.vod_downloading_container)
         self.stop_btn.setToolTip("다운로드 중지")
         self.stop_btn.setFixedSize(22, 22)
         self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -430,19 +587,183 @@ class TaskCardWidget(QFrame):
         )
         self.stop_btn.clicked.connect(self.trigger_stop_download)
 
-        downloading_layout.addWidget(self.recording_label)
-        downloading_layout.addWidget(self.spinner)
-        downloading_layout.addWidget(self.stop_btn)
-        self.downloading_container.hide()
+        self.progress_bar = QProgressBar(self.vod_downloading_container)
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setMinimumWidth(100)
+        self.progress_bar.setMaximumWidth(160)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar { background-color: #2a2a2a; border: none; border-radius: 3px; }"
+            "QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }"
+        )
+
+        self.pct_label = QLabel("0%", self.vod_downloading_container)
+        self.pct_label.setStyleSheet(
+            "color: #d1d5db; font-size: 11px; min-width: 24px;"
+        )
+
+        vod_downloading_layout.addWidget(self.vod_chzzk_badge)
+        vod_downloading_layout.addWidget(self.stop_btn)
+        vod_downloading_layout.addWidget(self.progress_bar)
+        vod_downloading_layout.addWidget(self.pct_label)
+        self.vod_downloading_container.hide()
+
+        # 4-4. 라이브 녹화 중 컨테이너 ([Z] 뱃지 + [📺▶] 아이콘 + 녹화 중... + [■] 중지)
+        self.live_recording_container = QWidget(self.action_container)
+        live_layout = QHBoxLayout(self.live_recording_container)
+        live_layout.setContentsMargins(0, 0, 0, 0)
+        live_layout.setSpacing(6)
+
+        self.live_chzzk_badge = QPushButton("Z", self.live_recording_container)
+        self.live_chzzk_badge.setFixedSize(24, 22)
+        self.live_chzzk_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.live_chzzk_badge.setStyleSheet(
+            "QPushButton { background-color: #000000; color: #00ffa3; border: none; border-radius: 3px; font-weight: 900; font-size: 11px; padding: 0; }"
+            "QPushButton:hover { background-color: #1f2937; }"
+        )
+        self.live_chzzk_badge.clicked.connect(self._on_chzzk_badge_clicked)
+
+        self.live_icon_label = QLabel("📺▶", self.live_recording_container)
+        self.live_icon_label.setStyleSheet(
+            "color: #9ca3af; font-size: 12px; font-weight: bold;"
+        )
+
+        self.recording_label = QLabel("녹화 중…", self.live_recording_container)
+        self.recording_label.setStyleSheet(
+            "color: #ef4444; font-size: 11px; font-weight: 600;"
+        )
+
+        self.spinner = SpinnerWidget(size=14, parent=self.live_recording_container)
+
+        self.live_stop_btn = QPushButton("■", self.live_recording_container)
+        self.live_stop_btn.setToolTip("녹화 중지")
+        self.live_stop_btn.setFixedSize(22, 22)
+        self.live_stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.live_stop_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #ef4444; border: none; font-size: 11px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #374151; color: #f87171; border-radius: 4px; }"
+        )
+        self.live_stop_btn.clicked.connect(self.trigger_stop_download)
+
+        live_layout.addWidget(self.live_chzzk_badge)
+        live_layout.addWidget(self.live_icon_label)
+        live_layout.addWidget(self.recording_label)
+        live_layout.addWidget(self.spinner)
+        live_layout.addWidget(self.live_stop_btn)
+        self.live_recording_container.hide()
+
+        # 4-5. 완료 상태 컨테이너 (VOD 완료 시 [Z] 단독, Live 완료 시 [Z] [📺▶])
+        self.completed_container = QWidget(self.action_container)
+        completed_layout = QHBoxLayout(self.completed_container)
+        completed_layout.setContentsMargins(0, 0, 0, 0)
+        completed_layout.setSpacing(6)
+
+        self.completed_chzzk_badge = QPushButton("Z", self.completed_container)
+        self.completed_chzzk_badge.setFixedSize(24, 22)
+        self.completed_chzzk_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.completed_chzzk_badge.setStyleSheet(
+            "QPushButton { background-color: #000000; color: #00ffa3; border: none; border-radius: 3px; font-weight: 900; font-size: 11px; padding: 0; }"
+            "QPushButton:hover { background-color: #1f2937; }"
+        )
+        self.completed_chzzk_badge.clicked.connect(self._on_chzzk_badge_clicked)
+
+        self.completed_live_icon_label = QLabel("📺▶", self.completed_container)
+        self.completed_live_icon_label.setStyleSheet(
+            "color: #9ca3af; font-size: 12px; font-weight: bold;"
+        )
+
+        completed_layout.addWidget(self.completed_chzzk_badge)
+        completed_layout.addWidget(self.completed_live_icon_label)
+        self.completed_container.hide()
+
+        # 하위 호환용 별칭
+        self.downloading_container = self.vod_downloading_container
 
         action_layout.addWidget(self.auth_container)
         action_layout.addWidget(self.ready_container)
-        action_layout.addWidget(self.downloading_container)
+        action_layout.addWidget(self.vod_downloading_container)
+        action_layout.addWidget(self.live_recording_container)
+        action_layout.addWidget(self.completed_container)
 
         bottom_row.addWidget(self.action_container)
         bottom_row.addStretch()
 
-        # 3번 위치 (우하단): 재생 시간, 화질, 진행/실패 상태 라벨
+        # 3번 위치 (우하단): 실시간 다운로드 메트릭 컨테이너 (Hitomi 스타일)
+        self.downloading_metrics_widget = QWidget(self)
+        metrics_parent_layout = QHBoxLayout(self.downloading_metrics_widget)
+        metrics_parent_layout.setContentsMargins(0, 0, 0, 0)
+        metrics_parent_layout.setSpacing(0)
+
+        # 3-1. VOD 다운로드 메트릭: [속도] | [남은 시간] | [⬇ 용량] (남은 시간 유무에 따라 속도만 이동, 용량 우측 끝 고정)
+        self.vod_metrics_widget = QWidget(self.downloading_metrics_widget)
+        vod_m_layout = QHBoxLayout(self.vod_metrics_widget)
+        vod_m_layout.setContentsMargins(0, 0, 0, 0)
+        vod_m_layout.setSpacing(4)
+        vod_m_layout.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self.speed_label = QLabel("", self.vod_metrics_widget)
+        self.speed_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        self.eta_sep_label = QLabel("|", self.vod_metrics_widget)
+        self.eta_sep_label.setStyleSheet("color: #4b5563; font-size: 11px;")
+
+        self.eta_label = QLabel("", self.vod_metrics_widget)
+        self.eta_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        self.size_sep_label = QLabel("|", self.vod_metrics_widget)
+        self.size_sep_label.setStyleSheet("color: #4b5563; font-size: 11px;")
+
+        self.size_label = QLabel("", self.vod_metrics_widget)
+        self.size_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        vod_m_layout.addWidget(self.speed_label)
+        vod_m_layout.addWidget(self.eta_sep_label)
+        vod_m_layout.addWidget(self.eta_label)
+        vod_m_layout.addWidget(self.size_sep_label)
+        vod_m_layout.addWidget(self.size_label)
+
+        # 3-2. Live 녹화 중 및 완료 상태 메트릭: 🕒 {시간}   ⬇ {용량} (Hitomi 사진 1, 2 규격)
+        self.icon_metrics_widget = QWidget(self.downloading_metrics_widget)
+        icon_m_layout = QHBoxLayout(self.icon_metrics_widget)
+        icon_m_layout.setContentsMargins(0, 0, 0, 0)
+        icon_m_layout.setSpacing(4)
+        icon_m_layout.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self.clock_icon_label = QLabel("🕒", self.icon_metrics_widget)
+        self.clock_icon_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        self.time_metric_label = QLabel("", self.icon_metrics_widget)
+        self.time_metric_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        self.spacer_label = QLabel("  ", self.icon_metrics_widget)
+        self.spacer_label.setStyleSheet("font-size: 11px;")
+
+        self.arrow_icon_label = QLabel("⬇", self.icon_metrics_widget)
+        self.arrow_icon_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        self.size_metric_label = QLabel("", self.icon_metrics_widget)
+        self.size_metric_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+
+        icon_m_layout.addWidget(self.clock_icon_label)
+        icon_m_layout.addWidget(self.time_metric_label)
+        icon_m_layout.addWidget(self.spacer_label)
+        icon_m_layout.addWidget(self.arrow_icon_label)
+        icon_m_layout.addWidget(self.size_metric_label)
+
+        self.elapsed_label = self.time_metric_label  # 호환용 별칭
+
+        metrics_parent_layout.addWidget(self.vod_metrics_widget)
+        metrics_parent_layout.addWidget(self.icon_metrics_widget)
+        self.downloading_metrics_widget.hide()
+        bottom_row.addWidget(self.downloading_metrics_widget)
+
+        # 3-3. 일반 상태(대기, 완료, 실패 등) 텍스트 라벨
         self.status_label = QLabel(self)
         self.status_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
         bottom_row.addWidget(self.status_label)
@@ -450,20 +771,52 @@ class TaskCardWidget(QFrame):
         info_layout.addLayout(bottom_row)
         main_layout.addLayout(info_layout, stretch=1)
 
+    @property
+    def has_local_media_file(self) -> bool:
+        """다운로드 완료 또는 중단 시 실제로 재생/삭제할 수 있는 로컬 파일이 존재하는지 여부를 반환합니다."""
+        target = getattr(self, "final_file_path", None) or self.target_path
+        if target is not None:
+            try:
+                p = Path(target)
+                return p.is_file() and p.stat().st_size > 0
+            except (OSError, ValueError):
+                return False
+        return False
+
     def _show_hover_toolbar(self, visible: bool) -> None:
         """2번 위치 우상단 호버 툴바 버튼들의 가시성을 상태에 따라 제어합니다."""
         if visible:
-            if self.status == TaskStatus.COMPLETED:
-                self.open_folder_btn.show()
-                self.play_btn.show()
-                self.delete_btn.show()
+            stopped_without_file = getattr(self, "_stopped_without_file", False)
+            should_hide_file_actions = stopped_without_file
+
+            # 파일 삭제 [🗑️]: 파일이 없는 취소 카드가 아닌 경우에만 노출
+            if not should_hide_file_actions and (
+                self.status
+                in (
+                    TaskStatus.DOWNLOADING,
+                    TaskStatus.STOPPED,
+                    TaskStatus.COMPLETED,
+                )
+            ):
+                self.action_delete_file_btn.show()
             else:
-                self.open_folder_btn.hide()
+                self.action_delete_file_btn.hide()
+
+            # 폴더 열기(📁)와 목록에서 제거(✕)는 호버 시 상시 노출
+            self.open_folder_btn.show()
+            self.delete_btn.show()
+
+            # 재생(▶) 버튼: 완료 또는 중단 상태(파일 없는 취소 제외)에서 활성화
+            if not should_hide_file_actions and (
+                self.status in (TaskStatus.COMPLETED, TaskStatus.STOPPED)
+            ):
+                self.play_btn.show()
+            else:
                 self.play_btn.hide()
-                self.delete_btn.show()
         else:
             self.open_folder_btn.hide()
             self.play_btn.hide()
+            self.action_delete_file_btn.hide()
             self.delete_btn.hide()
 
     def enterEvent(self, event: QEnterEvent | None) -> None:  # noqa: N802
@@ -505,6 +858,8 @@ class TaskCardWidget(QFrame):
         self.is_deleted = True
         self.close_info_window()
         self.spinner.stop()
+        if hasattr(self, "thumb_spinner") and not sip.isdeleted(self.thumb_spinner):
+            self.thumb_spinner.stop()
         self._detach_thumb_loader()
         super().deleteLater()
 
@@ -512,6 +867,8 @@ class TaskCardWidget(QFrame):
         self.is_deleted = True
         self.close_info_window()
         self.spinner.stop()
+        if hasattr(self, "thumb_spinner") and not sip.isdeleted(self.thumb_spinner):
+            self.thumb_spinner.stop()
         self._detach_thumb_loader()
         super().closeEvent(event)
 
@@ -530,6 +887,9 @@ class TaskCardWidget(QFrame):
             return
         if not hasattr(self, "thumb_label") or sip.isdeleted(self.thumb_label):
             return
+        if hasattr(self, "thumb_spinner") and not sip.isdeleted(self.thumb_spinner):
+            self.thumb_spinner.stop()
+            self.thumb_spinner.hide()
         pixmap = QPixmap()
         if pixmap.loadFromData(img_bytes):
             scaled = pixmap.scaled(
@@ -651,7 +1011,7 @@ class TaskCardWidget(QFrame):
         return TaskSpec(
             task_id=self.task_id,
             video_url=self.raw_url,
-            is_live=False,
+            is_live=self.is_live,
             title=self.vod_info.video_title if self.vod_info else "",
             streamer=self.vod_info.channel_name if self.vod_info else "",
             selected_quality=quality,
@@ -664,6 +1024,8 @@ class TaskCardWidget(QFrame):
         if self.status == status:
             return
         self.status = status
+        if status == TaskStatus.DOWNLOADING:
+            self._has_started_download = True
         self._update_display()
         self._apply_style()
         if self.underMouse():
@@ -675,6 +1037,7 @@ class TaskCardWidget(QFrame):
 
     def set_completed(self, final_file_path: str | Path) -> None:
         """다운로드 완료 시 호출되어 최종 파일 경로를 보존하고 COMPLETED 상태로 전이합니다."""
+        self._has_started_download = True
         if final_file_path and str(final_file_path).strip():
             self.final_file_path = Path(final_file_path)
         else:
@@ -685,11 +1048,32 @@ class TaskCardWidget(QFrame):
 
     def open_folder(self) -> None:
         """📁 폴더 열기: 탐색기를 열고 해당 파일을 선택(하이라이트)하거나 폴더를 엽니다."""
-        if (
-            not self.final_file_path
-            or str(self.final_file_path).strip() in ("", ".")
-            or not self.final_file_path.is_file()
-        ):
+        # 1. COMPLETED 상태인 경우: 반드시 최종 파일이 존재해야 함 (없으면 경고 토스트)
+        if self.status == TaskStatus.COMPLETED:
+            target_file = getattr(self, "final_file_path", None)
+            if (
+                target_file
+                and str(target_file).strip() not in ("", ".")
+                and Path(target_file).is_file()
+            ):
+                import subprocess
+                import sys
+
+                if sys.platform == "win32":
+                    try:
+                        subprocess.Popen(f'explorer /select,"{target_file}"')
+                        return
+                    except Exception:
+                        pass
+
+                from PyQt6.QtCore import QUrl
+                from PyQt6.QtGui import QDesktopServices
+
+                QDesktopServices.openUrl(
+                    QUrl.fromLocalFile(str(Path(target_file).parent))
+                )
+                return
+
             main_win = self.window()
             if hasattr(main_win, "toast") and hasattr(main_win.toast, "show_toast"):
                 from chzzk_downloader.gui.toast import ToastType
@@ -700,20 +1084,26 @@ class TaskCardWidget(QFrame):
                 )
             return
 
-        import subprocess
-        import sys
+        # 2. COMPLETED 상태가 아닌 경우 (예: READY 등): 대상 저장 폴더 열기
+        settings = get_current_settings()
+        target_dir = self.custom_download_dir or settings.download_dir
+        if target_dir and Path(target_dir).exists():
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
 
-        if sys.platform == "win32":
-            try:
-                subprocess.Popen(f'explorer /select,"{self.final_file_path}"')
-                return
-            except Exception:
-                pass
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(Path(target_dir).resolve()))
+            )
+            return
 
-        from PyQt6.QtCore import QUrl
-        from PyQt6.QtGui import QDesktopServices
+        main_win = self.window()
+        if hasattr(main_win, "toast") and hasattr(main_win.toast, "show_toast"):
+            from chzzk_downloader.gui.toast import ToastType
 
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.final_file_path.parent)))
+            main_win.toast.show_toast(
+                f"폴더를 찾을 수 없습니다: {target_dir or ''}",
+                ToastType.WARNING,
+            )
 
     def play_media(self) -> None:
         """▶ 영상 재생: 시스템 기본 미디어 플레이어로 다운로드된 비디오를 실행합니다."""
@@ -750,20 +1140,129 @@ class TaskCardWidget(QFrame):
                 self.status_label.setText("대기 중...")
 
     def update_progress(self, progress: TaskProgress) -> None:
-        """다운로드 진행 상황(3번 위치: 퍼센트, 속도, ETA)을 실시간으로 갱신합니다."""
+        """다운로드/녹화 진행 상황을 실시간으로 갱신합니다."""
         if self.status != TaskStatus.DOWNLOADING:
             return
-        self.status_label.show()
-        parts: list[str] = []
-        if progress.percentage > 0 or progress.downloaded_bytes > 0:
-            parts.append(f"{progress.percentage:.1f}%")
-        if progress.speed_str:
-            parts.append(progress.speed_str)
-        if progress.eta_str and progress.eta_seconds > 0:
-            parts.append(f"ETA {progress.eta_str}")
+        self.status_label.hide()
+        if hasattr(self, "downloading_metrics_widget"):
+            self.downloading_metrics_widget.show()
 
-        if parts:
-            self.status_label.setText(" | ".join(parts))
+        if self.is_live:
+            # C03-Live (라이브 녹화 중): 3번 위치 🕒 {녹화시간}   ⬇ {현재용량} (속도 제외)
+            if hasattr(self, "vod_metrics_widget"):
+                self.vod_metrics_widget.hide()
+            if hasattr(self, "icon_metrics_widget"):
+                self.icon_metrics_widget.show()
+                self.time_metric_label.setText(progress.elapsed_str or "00:00")
+                self.size_metric_label.setText(progress.downloaded_size_str or "0.0 B")
+        else:
+            # C03-VOD: 4번 위치(진행바+정수%) & 3번 위치([속도] | [남은 시간] | [⬇ 용량])
+            if hasattr(self, "icon_metrics_widget"):
+                self.icon_metrics_widget.hide()
+            if hasattr(self, "vod_metrics_widget"):
+                self.vod_metrics_widget.show()
+
+            import math
+
+            raw_pct = progress.percentage
+            if raw_pct is None or math.isnan(raw_pct) or math.isinf(raw_pct):
+                pct_int = 0
+            else:
+                pct_int = int(min(100, max(0, raw_pct)))
+            self.progress_bar.setValue(pct_int)
+            self.pct_label.setText(f"{pct_int}%")
+
+            tip_text = progress.progress_summary
+            if tip_text:
+                if self.progress_bar.toolTip() != tip_text:
+                    self.progress_bar.setToolTip(tip_text)
+                if hasattr(self, "pct_label") and self.pct_label.toolTip() != tip_text:
+                    self.pct_label.setToolTip(tip_text)
+
+            self.elapsed_label.setText(progress.elapsed_str or "00:00")
+
+            if progress.speed_str:
+                self.speed_label.setText(progress.speed_str)
+            if progress.downloaded_bytes > 0:
+                self.size_label.setText(f"⬇ {progress.downloaded_size_str}")
+
+            # ETA(남은 시간) 가시성 제어:
+            # 시작 직후 남은 시간이 없으면 ETA 숨김 -> 속도가 용량 바로 왼쪽에 배치
+            # 남은 시간이 생기면 노출되어 속도 위치만 앞으로 이동
+            if (
+                progress.eta_seconds > 0
+                and progress.eta_str
+                and progress.eta_str != "00:00:00"
+            ):
+                self.eta_label.setText(progress.eta_str)
+                self.eta_label.show()
+                self.eta_sep_label.show()
+            else:
+                self.eta_label.hide()
+                self.eta_sep_label.hide()
+
+    def _on_delete_file_clicked(self) -> None:
+        """2번 위치 [🗑️] 파일 삭제 클릭 핸들러 (M11 모달 확인 후 안전 삭제 및 카드 자동 제거)."""
+        target = (
+            getattr(self, "final_file_path", None)
+            or self.target_path
+            or getattr(self, "completed_file_path", None)
+        )
+
+        if not target and self.vod_info:
+            settings = get_current_settings()
+            save_dir = self.custom_download_dir or settings.download_dir
+            ext = (
+                self.ext_combo.currentText()
+                if hasattr(self, "ext_combo") and self.ext_combo.currentText()
+                else settings.file_extension
+            )
+            filename = generate_vod_filename(self.vod_info, ext=ext)
+            target = save_dir / filename
+
+        filename_str = Path(target).name if target else "다운로드 파일"
+        ok = ask_confirm_dialog(
+            parent=self,
+            text=f"다음 파일이 삭제됩니다:\n{filename_str}",
+            title="Chzzk Downloader",
+            is_danger=True,
+        )
+        if not ok:
+            return
+
+        # 다운로드 중인 경우 프로세스 먼저 안전 중지
+        if self.status == TaskStatus.DOWNLOADING:
+            self.request_stop_download.emit(self.task_id)
+
+        # 실제 파일 안전 삭제 수행 (팟플레이어 등 재생 중 삭제 지원 및 .part 임시 파일 일괄 정리)
+        success = False
+        if target:
+            success = _delete_file_safely(Path(target))
+        else:
+            success = True
+
+        if not success:
+            QMessageBox.warning(
+                self,
+                "Chzzk Downloader",
+                f"파일을 삭제할 수 없습니다:\n{filename_str}\n\n다른 프로그램에서 사용 중이거나 쓰기 권한이 없습니다.",
+            )
+            return
+
+        # T08 동영상 삭제 토스트 노출
+        main_win = self.window()
+        if main_win and hasattr(main_win, "show_file_deleted_toast"):
+            main_win.show_file_deleted_toast(filename_str)
+        elif main_win and hasattr(main_win, "toast"):
+            safe_name = html.escape(filename_str)
+            toast_html = (
+                f'<span style="color: #ef4444; font-size: 14px;">🗑</span> '
+                f'<span style="color: #ffffff;">{safe_name}</span>'
+            )
+            main_win.toast.show_toast(toast_html, auto_dismiss_ms=2500)
+
+        # 작업 목록에서 카드를 자동으로 즉시 제거
+        self.delete_requested.emit()
 
     def trigger_start_download(self) -> bool:
         """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 또는 QUEUED 상태 진입을 요청합니다."""
@@ -815,9 +1314,11 @@ class TaskCardWidget(QFrame):
         spec = self.get_task_spec()
         self.request_start_download.emit(spec)
 
-        # MainWindow와 연결되어 있지 않은 독립 위젯 상태이거나,
-        # request_start_download 시그널에 의해 status가 변경되지 않은 경우 기본 전이
-        if self.status == TaskStatus.READY:
+        # MainWindow와 연결되어 있지 않은 독립 위젯(단위 테스트 등)인 경우에만 기본 전이
+        if (
+            self.receivers(self.request_start_download) == 0
+            and self.status == TaskStatus.READY
+        ):
             self.status = TaskStatus.DOWNLOADING
             self._update_display()
             self.download_started.emit()
@@ -832,10 +1333,13 @@ class TaskCardWidget(QFrame):
 
     def trigger_stop_download(self) -> bool:
         """다운로드 중지 트리거: 확인 모달 승인 시 안전 중단 및 완결(STOPPED) 상태로 전이."""
-        if self.status not in (TaskStatus.DOWNLOADING, TaskStatus.QUEUED):
+        if self.status != TaskStatus.DOWNLOADING:
             return False
         if not self._confirm_stop_dialog():
             return False
+
+        if not self.has_local_media_file:
+            self._stopped_without_file = True
 
         self.request_stop_download.emit(self.task_id)
 
@@ -852,6 +1356,8 @@ class TaskCardWidget(QFrame):
         self.error_type = ""
         self.traceback_str = ""
         self.final_file_path = None
+        self._has_started_download = False
+        self._stopped_without_file = False
         self.selected_quality = ""
         self.custom_download_dir = None
         self.target_path = None
@@ -873,6 +1379,14 @@ class TaskCardWidget(QFrame):
 
     def _update_display(self) -> None:
         """현재 상태에 따라 UI 텍스트 및 가시성을 갱신합니다."""
+        if hasattr(self, "downloading_metrics_widget"):
+            self.downloading_metrics_widget.hide()
+            self.progress_bar.hide()
+
+        if hasattr(self, "thumb_spinner") and self.status != TaskStatus.ANALYZING:
+            self.thumb_spinner.stop()
+            self.thumb_spinner.hide()
+
         if self.status == TaskStatus.ANALYZING:
             # 유저 요구사항: 읽는 중… URL
             self.title_label.setText(f"읽는 중… {self.raw_url}")
@@ -880,9 +1394,15 @@ class TaskCardWidget(QFrame):
             self.status_label.setText("분석 중...")
             self.auth_container.hide()
             self.ready_container.hide()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
+            self.completed_container.hide()
             self.spinner.stop()
-            self.thumb_label.setText("분석 중")
+            # 빈 화면에 분석 중 텍스트 대신 회색 회전 위젯으로 표시 (사용자 요구사항)
+            self.thumb_label.setText("")
+            if hasattr(self, "thumb_spinner"):
+                self.thumb_spinner.show()
+                self.thumb_spinner.start()
 
         elif self.status == TaskStatus.READY:
             self.status_label.show()
@@ -895,7 +1415,9 @@ class TaskCardWidget(QFrame):
                 )
             self.auth_container.hide()
             self.ready_container.show()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
+            self.completed_container.hide()
             self.spinner.stop()
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("VOD")
@@ -912,58 +1434,143 @@ class TaskCardWidget(QFrame):
                 self.title_label.setText(self.vod_info.display_name)
             self.auth_container.hide()
             self.ready_container.hide()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
+            self.completed_container.hide()
             self.spinner.stop()
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("대기")
 
         elif self.status == TaskStatus.COMPLETED:
-            self.status_label.show()
-            if self.vod_info:
-                self.title_label.setText(self.vod_info.display_name)
-                dur_str = format_duration(self.vod_info.duration)
+            if hasattr(self, "downloading_metrics_widget"):
+                self.downloading_metrics_widget.show()
+            if hasattr(self, "vod_metrics_widget"):
+                self.vod_metrics_widget.hide()
+            self.status_label.hide()
+
+            dur_str = format_duration(self.vod_info.duration) if self.vod_info else ""
+            file_size_str = ""
+            target = (
+                getattr(self, "final_file_path", None)
+                or self.target_path
+                or getattr(self, "completed_file_path", None)
+            )
+
+            if target:
+                p = Path(target)
+                if p.exists() and p.is_file():
+                    from chzzk_downloader.core.task_models import format_byte_size
+
+                    file_size_str = format_byte_size(p.stat().st_size)
+
+            # C08: 우하단 🕒 {시간}   ⬇ {용량} 메트릭
+            if hasattr(self, "icon_metrics_widget"):
+                self.icon_metrics_widget.show()
+                self.time_metric_label.setText(dur_str or "00:00")
+                self.size_metric_label.setText(file_size_str or "--")
+
+            # status_label 호환 텍스트 보존
+            if dur_str and file_size_str:
+                self.status_label.setText(f"완료 ({dur_str} | {file_size_str})")
+            elif file_size_str:
+                self.status_label.setText(f"완료 ({file_size_str})")
+            elif dur_str:
                 self.status_label.setText(f"완료 ({dur_str})")
             else:
                 self.status_label.setText("완료")
+
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
             self.auth_container.hide()
             self.ready_container.hide()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
             self.spinner.stop()
+
+            # 4번 위치: VOD 완료 시 [Z] 단독, Live 완료 시 [Z] [📺▶]
+            self.completed_container.show()
+            self.completed_chzzk_badge.show()
+            if self.is_live:
+                self.completed_live_icon_label.show()
+            else:
+                self.completed_live_icon_label.hide()
+
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("완료")
 
-        elif self.status == TaskStatus.DOWNLOADING:
-            self.status_label.show()
-            if self.vod_info:
-                self.title_label.setText(self.vod_info.display_name)
-                dur_str = format_duration(self.vod_info.duration)
-                quality_str = self.selected_quality or self.quality_combo.currentText()
-                self.status_label.setText(
-                    f"{quality_str} | {dur_str}" if quality_str else dur_str
-                )
-            self.auth_container.hide()
-            self.ready_container.hide()
-            self.downloading_container.show()
-            self.spinner.start()
-
         elif self.status == TaskStatus.STOPPED:
-            self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
-                dur_str = format_duration(self.vod_info.duration)
-                quality_str = self.selected_quality or self.quality_combo.currentText()
-                self.status_label.setText(
-                    f"{quality_str} | 중지됨" if quality_str else "중지됨"
-                )
-            else:
-                self.status_label.setText("중지됨")
-            # 4번 위치 컨트롤 모두 숨김 (재개 불가 완결 작업)
             self.auth_container.hide()
             self.ready_container.hide()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
             self.spinner.stop()
+
+            # 일반 STOPPED (C08 완결 규격)
+            if hasattr(self, "downloading_metrics_widget"):
+                self.downloading_metrics_widget.show()
+            if hasattr(self, "vod_metrics_widget"):
+                self.vod_metrics_widget.hide()
+            self.status_label.hide()
+
+            dur_str = format_duration(self.vod_info.duration) if self.vod_info else ""
+            file_size_str = ""
+            target = (
+                getattr(self, "final_file_path", None)
+                or self.target_path
+                or getattr(self, "completed_file_path", None)
+            )
+            if target:
+                p = Path(target)
+                if p.exists() and p.is_file():
+                    from chzzk_downloader.core.task_models import format_byte_size
+
+                    file_size_str = format_byte_size(p.stat().st_size)
+
+            if hasattr(self, "icon_metrics_widget"):
+                self.icon_metrics_widget.show()
+                self.time_metric_label.setText(dur_str or "00:00")
+                self.size_metric_label.setText(file_size_str or "--")
+
+            self.status_label.setText(f"중지됨 ({dur_str})" if dur_str else "중지됨")
+            self.completed_container.show()
+            self.completed_chzzk_badge.show()
+            if self.is_live:
+                self.completed_live_icon_label.show()
+            else:
+                self.completed_live_icon_label.hide()
             if not (self.vod_info and self.vod_info.thumbnail_url):
-                self.thumb_label.setText("VOD")
+                self.thumb_label.setText("중지")
+
+        elif self.status == TaskStatus.DOWNLOADING:
+            self.status_label.hide()
+            if hasattr(self, "downloading_metrics_widget"):
+                self.downloading_metrics_widget.show()
+
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
+            self.auth_container.hide()
+            self.ready_container.hide()
+            self.completed_container.hide()
+
+            if self.is_live:
+                self.vod_downloading_container.hide()
+                self.live_recording_container.show()
+                if hasattr(self, "vod_metrics_widget"):
+                    self.vod_metrics_widget.hide()
+                if hasattr(self, "icon_metrics_widget"):
+                    self.icon_metrics_widget.show()
+                self.spinner.start()
+            else:
+                self.spinner.stop()
+                self.live_recording_container.hide()
+                self.vod_downloading_container.show()
+                self.progress_bar.show()
+                if hasattr(self, "icon_metrics_widget"):
+                    self.icon_metrics_widget.hide()
+                if hasattr(self, "vod_metrics_widget"):
+                    self.vod_metrics_widget.show()
 
         elif self.status == TaskStatus.FAILED_LOGIN_REQUIRED:
             self.title_label.setText(f"Login required; Please login\n{self.raw_url}")
@@ -977,12 +1584,14 @@ class TaskCardWidget(QFrame):
             self.cookie_btn.show()
             self.login_btn.show()
             self.ready_container.hide()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
+            self.completed_container.hide()
             self.spinner.stop()
             self.thumb_label.setText("인증 필요")
 
         elif self.status == TaskStatus.FAILED_INVALID:
-            self.title_label.setText(f"Invalid: [chzzk] {self.raw_url}")
+            self.title_label.setText(f"Invalid: {self.raw_url}")
             # C05: 3번 위치 상태 표시는 불필요하므로 숨김
             self.status_label.setText("")
             self.status_label.hide()
@@ -993,15 +1602,14 @@ class TaskCardWidget(QFrame):
             self.cookie_btn.hide()
             self.login_btn.hide()
             self.ready_container.hide()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
+            self.completed_container.hide()
             self.spinner.stop()
             self.thumb_label.setText("✕")
 
         elif self.status == TaskStatus.FAILED_DOWNLOAD:
-            if self.vod_info:
-                self.title_label.setText(self.vod_info.display_name)
-            else:
-                self.title_label.setText(f"Download failed: {self.raw_url}")
+            self.title_label.setText(f"Download failed: {self.raw_url}")
             # C07: 3번 위치 상태 표시는 불필요하므로 숨김
             self.status_label.setText("")
             self.status_label.hide()
@@ -1012,7 +1620,9 @@ class TaskCardWidget(QFrame):
             self.cookie_btn.hide()
             self.login_btn.hide()
             self.ready_container.hide()
-            self.downloading_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
+            self.completed_container.hide()
             self.spinner.stop()
             self.thumb_label.setText("실패")
 

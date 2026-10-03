@@ -254,11 +254,11 @@ class SettingsWindow(QDialog):
         if file_path:
             ok, msg = load_cookie_file(Path(file_path))
             if ok:
-                QMessageBox.information(self, "불러오기 완료", msg)
+                QMessageBox.information(self, "Chzzk Downloader", msg)
                 self.refresh_status()
                 self.cookies_updated.emit()
             else:
-                QMessageBox.warning(self, "불러오기 실패", msg)
+                QMessageBox.warning(self, "Chzzk Downloader", msg)
 
     def _on_export_clicked(self) -> None:
         """현재 저장된 쿠키를 파일로 내보냅니다."""
@@ -271,9 +271,9 @@ class SettingsWindow(QDialog):
         if file_path:
             ok, msg = export_cookie_file(Path(file_path))
             if ok:
-                QMessageBox.information(self, "내보내기 완료", msg)
+                QMessageBox.information(self, "Chzzk Downloader", msg)
             else:
-                QMessageBox.warning(self, "내보내기 실패", msg)
+                QMessageBox.warning(self, "Chzzk Downloader", msg)
 
     def _on_clear_clicked(self) -> None:
         """등록된 쿠키를 초기화합니다 (확인/취소, 확인 하이라이트)."""
@@ -287,10 +287,10 @@ class SettingsWindow(QDialog):
                 self.refresh_status()
                 self.cookies_updated.emit()
                 QMessageBox.information(
-                    self, "초기화 완료", "등록된 쿠키가 삭제되었습니다."
+                    self, "Chzzk Downloader", "등록된 쿠키가 삭제되었습니다."
                 )
             else:
-                QMessageBox.warning(self, "초기화 실패", msg)
+                QMessageBox.warning(self, "Chzzk Downloader", msg)
 
     def _on_choose_folder(self) -> None:
         """폴더 아이콘 클릭 시 시스템 디렉터리 선택 창을 열어 경로를 지정합니다."""
@@ -302,7 +302,7 @@ class SettingsWindow(QDialog):
         except Exception as e:
             QMessageBox.warning(
                 self,
-                "폴더 오류",
+                "Chzzk Downloader",
                 f"폴더 선택 창을 여는 중 오류가 발생했습니다: {e}",
             )
             return
@@ -316,11 +316,11 @@ class SettingsWindow(QDialog):
             if ok:
                 self.folder_input.setText(str(Path(selected).resolve()))
             else:
-                QMessageBox.warning(self, "폴더 오류", msg)
+                QMessageBox.warning(self, "Chzzk Downloader", msg)
         except Exception as e:
             QMessageBox.warning(
                 self,
-                "폴더 오류",
+                "Chzzk Downloader",
                 f"경로 갱신 중 예외가 발생했습니다: {e}",
             )
 

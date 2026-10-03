@@ -37,6 +37,9 @@ jobs:
       - name: Run ruff format check
         run: uv run ruff format --check .
 
+      - name: Run AGENTS.md rule ratchet
+        run: uv run python tools/check_rules.py
+
   type-check:
     name: Type Check
     runs-on: ubuntu-latest

@@ -69,11 +69,16 @@ def test_task_card_analyzing_state_and_hover_action(qtbot):
     card = TaskCardWidget(raw_url=url, status=TaskStatus.ANALYZING)
     qtbot.addWidget(card)
 
+    card.show()
     assert card.status == TaskStatus.ANALYZING
     assert card.title_label.text() in (f"읽는 중… {url}", f"분석 중... ({url})")
     assert card.title_label.wordWrap() is True
     assert card.status_label.text() == "분석 중..."
-    assert card.thumb_label.text() == "분석 중"
+    # 사용자 요구사항: 빈 화면에 '분석 중' 텍스트 대신 회색 회전 위젯으로 표시
+    assert card.thumb_label.text() == ""
+    assert hasattr(card, "thumb_spinner") is True
+    assert card.thumb_spinner.isVisible() is True
+    assert card.thumb_spinner._timer.isActive() is True
     assert card.auth_container.isHidden() is True
     assert "#ef4444" not in card.styleSheet()
 
@@ -147,7 +152,7 @@ def test_task_card_failed_invalid_styling(qtbot):
     qtbot.addWidget(card)
 
     assert card.status == TaskStatus.FAILED_INVALID
-    assert card.title_label.text() == f"Invalid: [chzzk] {url}"
+    assert card.title_label.text() == f"Invalid: {url}"
     assert card.status_label.isHidden() is True
     assert card.status_label.text() == ""
     assert card.thumb_label.text() == "✕"
@@ -236,7 +241,7 @@ def test_main_window_invalid_url_immediately_adds_failed_card_and_toast(
     card = main_window.task_list.itemWidget(main_window.task_list.item(0))
     assert isinstance(card, TaskCardWidget)
     assert card.status == TaskStatus.FAILED_INVALID
-    assert card.title_label.text() == f"Invalid: [chzzk] {invalid_url}"
+    assert card.title_label.text() == f"Invalid: {invalid_url}"
     assert "#ef4444" in card.styleSheet()
 
     # 3. 토스트 알림 검증: Invalid: {URL}, 2초 자동 소멸 타이머 동작
@@ -355,7 +360,7 @@ def test_main_window_valid_url_not_found_flow(main_window, qtbot):
         card = main_window.task_list.itemWidget(main_window.task_list.item(0))
         assert isinstance(card, TaskCardWidget)
         assert card.status == TaskStatus.FAILED_INVALID
-        assert card.title_label.text() == f"Invalid: [chzzk] {test_url}"
+        assert card.title_label.text() == f"Invalid: {test_url}"
         assert "#ef4444" in card.styleSheet()
 
         # 2. 토스트 알림 검증

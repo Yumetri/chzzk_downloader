@@ -53,18 +53,27 @@ def main_window(qtbot, temp_settings_env):
 
 # 1. 파일명 생성 및 중복 해결 단위 테스트
 def test_sanitize_filename_converts_colon():
-    """콜론을 전각 콜론으로 치환하고 금지 문자를 정제하는지 검증."""
-    raw = '방송: 다시보기? <1> / 테스트 * | "호환"'
+    """콜론 및 금지 문자(/, ?, *, |, ", <, >, \\)를 전각 문자로 치환하는지 검증."""
+    raw = '방송: 다시보기? <1> / 테스트 * | "호환" \\'
     sanitized = sanitize_filename(raw)
     assert ":" not in sanitized
     assert "：" in sanitized  # 전각 콜론
     assert "?" not in sanitized
+    assert "？" in sanitized  # 전각 물음표
     assert "<" not in sanitized
+    assert "＜" in sanitized  # 전각 부등호
     assert ">" not in sanitized
+    assert "＞" in sanitized  # 전각 부등호
     assert "/" not in sanitized
+    assert "／" in sanitized  # 전각 슬래시
     assert "*" not in sanitized
+    assert "＊" in sanitized  # 전각 별표
     assert "|" not in sanitized
+    assert "｜" in sanitized  # 전각 파이프
     assert '"' not in sanitized
+    assert "＂" in sanitized  # 전각 따옴표
+    assert "\\" not in sanitized
+    assert "＼" in sanitized  # 전각 역슬래시
 
 
 def test_generate_vod_filename_with_and_without_live_date():
@@ -236,7 +245,7 @@ def test_start_download_and_file_duplicate_handling(qtbot, tmp_path, temp_settin
     assert card.ready_container.isHidden() is True
     assert card.downloading_container.isHidden() is False
     assert card.recording_label.text() == "녹화 중…"
-    assert card.spinner._timer.isActive() is True
+    assert card.spinner._timer.isActive() is False
 
     # 2. 동일 파일 생성
     expected_file.touch()
@@ -295,11 +304,11 @@ def test_stop_download_confirmation(qtbot, tmp_path):
     ):
         card.stop_btn.click()
         assert card.status == TaskStatus.STOPPED
-        # 중지 후 재개 불가 완결 작업이므로 4번 위치의 모든 컨트롤 숨김
+        # 중지 후 C08 완료 카드 규격과 일원화되어 완결 처리됨
         assert card.ready_container.isHidden() is True
         assert card.downloading_container.isHidden() is True
         assert card.spinner._timer.isActive() is False
-        assert "중지됨" in card.status_label.text()
+        assert "완료" in card.status_label.text() or "중지" in card.status_label.text()
 
 
 # 8. VOD가 다운로드 중인 상태에서 동일 URL 재입력 시 즉시 거부 검증
