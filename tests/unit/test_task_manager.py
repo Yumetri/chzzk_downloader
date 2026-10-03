@@ -143,8 +143,8 @@ def test_live_lane_isolation_unlimited(qtbot) -> None:
     assert recorder.queue_updates[-1] == (2, 0, 1)
 
 
-def test_cancel_queued_task(qtbot) -> None:
-    """대기열에 있는 작업 취소 시 큐에서 제거되고 시그널이 방출되는지 검증."""
+def test_remove_queued_task(qtbot) -> None:
+    """대기열에 있는 작업 삭제 시 큐에서 안전하게 제거되고 후속 대기 순번이 앞당겨지는지 검증."""
     manager = TaskManager(max_concurrent_vod=1)
     recorder = SignalRecorder(manager)
 
@@ -155,19 +155,17 @@ def test_cancel_queued_task(qtbot) -> None:
     assert manager.get_waiting_position("vod-2") == 1
     assert manager.get_waiting_position("vod-3") == 2
 
-    # vod-2 취소 -> STOPPED 상태로 전이되고 큐에서는 제외됨
-    cancelled = manager.cancel_task("vod-2")
-    assert cancelled is True
-    assert manager.get_task_status("vod-2") == TaskStatus.STOPPED
-    assert manager.get_waiting_position("vod-2") == -1
-    # vod-3이 대기 1번으로 앞당겨져야 함
-    assert manager.get_waiting_position("vod-3") == 1
+    # 대기 중인 작업에 대해 cancel_task는 허용되지 않음 (QUEUED는 STOPPED로 전이되지 않음)
+    assert manager.cancel_task("vod-2") is False
 
-    # vod-2 완전 제거 -> task_removed 시그널 방출
+    # vod-2 완전 제거 -> task_removed 시그널 방출 및 대기열 제외
     removed = manager.remove_task("vod-2")
     assert removed is True
     assert "vod-2" in recorder.removed
     assert manager.get_task_status("vod-2") is None
+    assert manager.get_waiting_position("vod-2") == -1
+    # vod-3이 대기 1번으로 앞당겨져야 함
+    assert manager.get_waiting_position("vod-3") == 1
 
 
 def test_reorder_queued_tasks(qtbot) -> None:

@@ -259,6 +259,10 @@ class MainWindow(QMainWindow):
                 self._worker.finished_failed.disconnect()
             except Exception:
                 pass
+            try:
+                self._worker.finished.disconnect()
+            except Exception:
+                pass
             self._worker.setParent(None)
             self._worker.quit()
             self._worker.wait(100)
@@ -519,7 +523,16 @@ class MainWindow(QMainWindow):
         worker.finished_failed.connect(
             lambda err, c=card, u=card.raw_url: self._on_vod_check_failed(err, c, u)
         )
-        worker.finished.connect(lambda: self.download_btn.setEnabled(True))
+
+        def _on_vod_check_finished() -> None:
+            if (
+                not sip.isdeleted(self)
+                and hasattr(self, "download_btn")
+                and not sip.isdeleted(self.download_btn)
+            ):
+                self.download_btn.setEnabled(True)
+
+        worker.finished.connect(_on_vod_check_finished)
         self._worker = worker
         worker.start()
 

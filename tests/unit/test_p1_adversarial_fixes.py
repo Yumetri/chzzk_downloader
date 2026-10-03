@@ -38,14 +38,13 @@ def sample_vod_info() -> VodInfo:
 
 
 # ---------------------------------------------------------------------------
-# 1. QUEUED 작업 취소 시 유령 버튼(재생, 파일 삭제) 미노출 및 완료 오인 방지
+# 1. QUEUED 작업은 STOPPED로 전이되지 않고 오직 목록 제거만 허용 검증
 # ---------------------------------------------------------------------------
-def test_queued_task_cancel_does_not_show_ghost_action_buttons(
+def test_queued_task_cannot_trigger_stop_download_only_delete(
     qtbot, sample_vod_info: VodInfo
 ) -> None:
-    """QUEUED(대기열) 상태에서 취소된 작업 카드는 다운로드된 파일이 없으므로
-    마우스 호버 시 재생(▶) 및 파일 삭제(🗑️) 버튼이 노출되지 않아야 하며,
-    3번 위치 상태도 완료가 아닌 '중지됨'/'취소됨'이어야 한다."""
+    """QUEUED(대기열) 상태 작업은 다운로드 중이 아니므로 trigger_stop_download가 거부(False)되어야 하며,
+    상태가 STOPPED로 변환되지 않고 오직 목록 삭제(delete_btn / delete_requested)만 가능하다."""
     card = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/15033444",
         status=TaskStatus.QUEUED,
@@ -53,28 +52,24 @@ def test_queued_task_cancel_does_not_show_ghost_action_buttons(
     )
     qtbot.addWidget(card)
 
-    # 중지 모달 승인 처리
-    with patch("chzzk_downloader.gui.task_card.ask_confirm_dialog", return_value=True):
-        ok = card.trigger_stop_download()
-        assert ok is True
-
-    assert card.status == TaskStatus.STOPPED
+    # 1. QUEUED 상태에서는 다운로드 중지(■) 트리거가 무시됨 (False 반환)
+    ok = card.trigger_stop_download()
+    assert ok is False
+    assert card.status == TaskStatus.QUEUED
 
     card.show()
-    # 마우스 호버 상태 트리거
     card._show_hover_toolbar(True)
 
-    # 목록 삭제(✕)는 노출되나, 파일 재생(▶) 및 파일 삭제(🗑️)는 절대 노출되지 않아야 함
+    # 2. 호버 시 파일 재생(▶) 및 파일 삭제(🗑️)는 노출되지 않고, 오직 목록에서 제거(✕)만 가능
     assert not card.delete_btn.isHidden()
-    assert card.play_btn.isHidden(), (
-        "다운로드된 적 없는 QUEUED 취소 카드에 재생 버튼이 노출되면 안 됩니다."
-    )
-    assert card.action_delete_file_btn.isHidden(), (
-        "로컬 파일이 없는 QUEUED 취소 카드에 파일 삭제 버튼이 노출되면 안 됩니다."
-    )
+    assert card.play_btn.isHidden()
+    assert card.action_delete_file_btn.isHidden()
 
-    # 3번 위치 상태 라벨이 '완료'를 포함하지 않아야 함
-    assert "완료" not in card.status_label.text()
+    # 3. ✕ 클릭 시 정상적으로 delete_requested 시그널 방출
+    delete_spy = MagicMock()
+    card.delete_requested.connect(delete_spy)
+    card.delete_btn.click()
+    delete_spy.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

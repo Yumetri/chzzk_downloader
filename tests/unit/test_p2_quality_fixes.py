@@ -16,11 +16,11 @@ from chzzk_downloader.gui.task_card import SpinnerWidget, TaskCardWidget
 
 
 # ---------------------------------------------------------------------------
-# 1. TaskManager.cancel_task의 READY 상태 안전 취소 테스트
+# 1. READY 상태 작업은 cancel_task가 아닌 remove_task로 처리 검증
 # ---------------------------------------------------------------------------
-def test_cancel_task_handles_ready_status() -> None:
-    """READY 상태의 작업에 대해 cancel_task가 정상적으로 True를 반환하고
-    STOPPED 상태로 전이되며 status_changed 시그널을 방출해야 한다."""
+def test_ready_task_cannot_cancel_only_remove() -> None:
+    """READY(준비) 상태 작업은 다운로드 중이 아니므로 cancel_task가 거부(False)되어야 하며,
+    작업 정리는 remove_task를 통해 수행되어야 한다."""
     manager = TaskManager(max_concurrent_vod=2)
     spec = TaskSpec(
         task_id="vod_ready_test_1",
@@ -30,26 +30,17 @@ def test_cancel_task_handles_ready_status() -> None:
 
     manager.add_task(spec)
     manager.reset_task(spec.task_id)
-    # 다운로드를 시작하지 않고 READY 상태로 둠
     assert manager.get_task_status(spec.task_id) == TaskStatus.READY
 
-    status_spy: list[tuple[str, TaskStatus, TaskStatus]] = []
-    manager.signals.task_status_changed.connect(
-        lambda tid, old_s, new_s: status_spy.append((tid, old_s, new_s))
-    )
-
-    # READY 상태에서 취소 요청
+    # 1. READY 상태에서 cancel_task는 거부(False)됨 (DOWNLOADING 상태만 STOPPED 전이 가능)
     ok = manager.cancel_task(spec.task_id)
+    assert ok is False
+    assert manager.get_task_status(spec.task_id) == TaskStatus.READY
 
-    # 1. 처리 성공(True) 반환 확인
-    assert ok is True, "READY 상태의 작업에 대해 cancel_task가 True를 반환해야 합니다."
-
-    # 2. 작업 상태가 STOPPED로 전이 확인
-    assert manager.get_task_status(spec.task_id) == TaskStatus.STOPPED
-
-    # 3. 시그널 방출 확인 (READY -> STOPPED)
-    assert len(status_spy) == 1
-    assert status_spy[0] == (spec.task_id, TaskStatus.READY, TaskStatus.STOPPED)
+    # 2. 작업 정리는 remove_task를 통해 안전하게 삭제됨
+    removed = manager.remove_task(spec.task_id)
+    assert removed is True
+    assert manager.get_task_status(spec.task_id) is None
 
 
 # ---------------------------------------------------------------------------
