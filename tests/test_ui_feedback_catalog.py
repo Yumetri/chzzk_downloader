@@ -577,17 +577,18 @@ def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
     card_c09_stopped.set_task_status(TaskStatus.READY)
     card_c09_stopped.set_task_status(TaskStatus.STOPPED)
     assert card_c09_stopped.stopped_complete_btn.isVisible() is True
-    assert card_c09_stopped.stopped_complete_btn.toolTip() == "완료 확정"
+    assert card_c09_stopped.stopped_complete_btn.toolTip() == "완료"
+    assert card_c09_stopped.stopped_retry_btn.toolTip() == "다시 시작"
     assert card_c09_stopped.stopped_progress_bar.isVisible() is True
     assert card_c09_stopped.stopped_pct_label.isVisible() is True
     card_c09_stopped._show_hover_toolbar(True)
     assert card_c09_stopped.open_folder_btn.isVisible() is True
     assert card_c09_stopped.play_btn.isVisible() is True
-    assert card_c09_stopped.retry_btn.isVisible() is True
+    assert card_c09_stopped.retry_btn.isHidden() is True
     assert card_c09_stopped.action_delete_file_btn.isVisible() is True
     assert card_c09_stopped.delete_btn.isVisible() is True
 
-    # 8. C05 분석 실패 (FAILED_INVALID): Invalid: {url} 문구 및 3번 숨김
+    # 8. C05 분석 실패 (FAILED_INVALID): Invalid: {url} 문구, 3번 숨김, 4번 재시도 위젯 숨김
     card_c05 = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/invalid_vod",
         status=TaskStatus.FAILED_INVALID,
@@ -599,8 +600,9 @@ def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
         == "Invalid: https://chzzk.naver.com/video/invalid_vod"
     )
     assert card_c05.status_label.isHidden() is True
+    assert card_c05.failed_retry_btn.isHidden() is True
 
-    # 9. C07 다운로드 실패 (FAILED_DOWNLOAD): Download failed: {url} 문구 및 3번 숨김
+    # 9. C07 다운로드 실패 (FAILED_DOWNLOAD): Download failed: {url} 문구, 3번 숨김, 4번에만 다시 시작 위젯 노출
     card_c07 = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/failed_vod",
         status=TaskStatus.FAILED_DOWNLOAD,
@@ -613,3 +615,5 @@ def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
         == "Download failed: https://chzzk.naver.com/video/failed_vod"
     )
     assert card_c07.status_label.isHidden() is True
+    assert card_c07.failed_retry_btn.isVisible() is True
+    assert card_c07.failed_retry_btn.toolTip() == "다시 시작"

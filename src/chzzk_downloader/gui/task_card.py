@@ -535,7 +535,7 @@ class TaskCardWidget(QFrame):
         self.failed_retry_btn.hide()
 
         self.failed_complete_btn = QPushButton("✓", self.auth_container)
-        self.failed_complete_btn.setToolTip("완료 확정")
+        self.failed_complete_btn.setToolTip("완료")
         self.failed_complete_btn.setFixedSize(24, 22)
         self.failed_complete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.failed_complete_btn.setStyleSheet(
@@ -743,7 +743,7 @@ class TaskCardWidget(QFrame):
         self.stopped_chzzk_badge.clicked.connect(self._on_chzzk_badge_clicked)
 
         self.stopped_retry_btn = QPushButton("🔄", self.stopped_container)
-        self.stopped_retry_btn.setToolTip("다시 시작 (이어서 다운로드)")
+        self.stopped_retry_btn.setToolTip("다시 시작")
         self.stopped_retry_btn.setFixedSize(24, 22)
         self.stopped_retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stopped_retry_btn.setStyleSheet(
@@ -753,7 +753,7 @@ class TaskCardWidget(QFrame):
         self.stopped_retry_btn.clicked.connect(self._on_retry_clicked)
 
         self.stopped_complete_btn = QPushButton("✓", self.stopped_container)
-        self.stopped_complete_btn.setToolTip("완료 확정")
+        self.stopped_complete_btn.setToolTip("완료")
         self.stopped_complete_btn.setFixedSize(24, 22)
         self.stopped_complete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stopped_complete_btn.setStyleSheet(
@@ -911,11 +911,8 @@ class TaskCardWidget(QFrame):
             else:
                 self.action_delete_file_btn.hide()
 
-            # 재시도(🔄) 버튼: STOPPED, FAILED_DOWNLOAD 상태 시 활성화
-            if self.status in (TaskStatus.STOPPED, TaskStatus.FAILED_DOWNLOAD):
-                self.retry_btn.show()
-            else:
-                self.retry_btn.hide()
+            # 재시도(🔄) 버튼은 4번 위치에만 단일 배치하므로 2번 위치 호버 툴바에서는 항상 숨김
+            self.retry_btn.hide()
 
             # 폴더 열기(📁)와 목록에서 제거(✕)는 호버 시 상시 노출
             self.open_folder_btn.show()
@@ -946,7 +943,7 @@ class TaskCardWidget(QFrame):
     def contextMenuEvent(  # noqa: N802
         self, event: QContextMenuEvent | None
     ) -> None:
-        """우클릭 컨텍스트 메뉴: 다시 다운로드, 완료 확정, 오류 상세, URL 복사 액션 지원."""
+        """우클릭 컨텍스트 메뉴: 다시 시작, 완료, 오류 상세, URL 복사 액션 지원."""
         if event is None:
             return
         menu = QMenu(self)
@@ -957,20 +954,18 @@ class TaskCardWidget(QFrame):
             "QMenu::item:disabled { color: #6b7280; }"
         )
 
-        # 1. 다시 다운로드 (재시도)
-        retry_action = QAction("다시 다운로드", menu)
+        # 1. 다시 시작
+        retry_action = QAction("다시 시작", menu)
         is_retryable = self.status in (
             TaskStatus.STOPPED,
             TaskStatus.FAILED_DOWNLOAD,
-            TaskStatus.FAILED_INVALID,
-            TaskStatus.FAILED_LOGIN_REQUIRED,
         )
         retry_action.setEnabled(is_retryable)
         retry_action.triggered.connect(self._on_retry_clicked)
         menu.addAction(retry_action)
 
-        # 2. 완료 확정
-        complete_action = QAction("완료 확정", menu)
+        # 2. 완료
+        complete_action = QAction("완료", menu)
         can_complete = (
             self.status
             in (
@@ -1837,7 +1832,7 @@ class TaskCardWidget(QFrame):
             self.error_info_btn.setToolTip("작업 정보")
             self.cookie_btn.show()
             self.login_btn.show()
-            self.failed_retry_btn.show()
+            self.failed_retry_btn.hide()
             if self.has_local_media_file:
                 self.failed_complete_btn.show()
             else:
@@ -1860,7 +1855,7 @@ class TaskCardWidget(QFrame):
             self.error_info_btn.setToolTip("작업 정보")
             self.cookie_btn.hide()
             self.login_btn.hide()
-            self.failed_retry_btn.show()
+            self.failed_retry_btn.hide()
             self.failed_complete_btn.hide()
             self.ready_container.hide()
             self.vod_downloading_container.hide()

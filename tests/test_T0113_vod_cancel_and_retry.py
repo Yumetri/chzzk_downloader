@@ -199,16 +199,17 @@ def test_task_card_stopped_controls_visibility_and_signals(qtbot, tmp_path):
     # 1-1. 유효 미디어 파일 부재 시 [✓ 완료 확정] 버튼은 아예 숨겨져 있어야 함 (Red 검증)
     assert card.stopped_complete_btn.isVisible() is False
 
-    # 2. 2번 위치 호버 시 retry_btn 노출 검증
+    # 2. 2번 위치 호버 시 retry_btn 비노출 검증 (4번 위치에만 다시 시작 배치)
     card.enterEvent(None)
-    assert card.retry_btn.isVisible() is True
+    assert card.retry_btn.isHidden() is True
 
-    # 3. 4번 위치 [🔄] 클릭 시 retry_requested 시그널 방출 검증
+    # 3. 4번 위치 [🔄] 툴팁 "다시 시작" 및 클릭 시 retry_requested 시그널 방출 검증
+    assert card.stopped_retry_btn.toolTip() == "다시 시작"
     with qtbot.waitSignal(card.retry_requested, timeout=1000) as blocker:
         card.stopped_retry_btn.click()
     assert blocker.args == ["100"]
 
-    # 4. 유효 미디어 파일 주입 시 [✓ 완료 확정] 버튼 노출 및 툴팁 "완료 확정" 검증
+    # 4. 유효 미디어 파일 주입 시 [✓ 완료] 버튼 노출 및 툴팁 "완료" 검증
     test_media = tmp_path / "valid_stopped_media.mp4"
     test_media.write_bytes(b"downloaded stream")
     card.target_path = test_media
@@ -216,16 +217,11 @@ def test_task_card_stopped_controls_visibility_and_signals(qtbot, tmp_path):
     card.set_task_status(TaskStatus.STOPPED)
 
     assert card.stopped_complete_btn.isVisible() is True
-    assert card.stopped_complete_btn.toolTip() == "완료 확정"
+    assert card.stopped_complete_btn.toolTip() == "완료"
 
     # 4-1. 4번 위치 [✓] 클릭 시 complete_requested 시그널 방출 검증
     with qtbot.waitSignal(card.complete_requested, timeout=1000) as blocker:
         card.stopped_complete_btn.click()
-    assert blocker.args == ["100"]
-
-    # 5. 2번 위치 [🔄] 클릭 시 retry_requested 시그널 방출 검증
-    with qtbot.waitSignal(card.retry_requested, timeout=1000) as blocker:
-        card.retry_btn.click()
     assert blocker.args == ["100"]
 
 
@@ -244,7 +240,13 @@ def test_task_card_failed_download_shows_retry_and_complete_when_file_exists(
     card.set_task_status(TaskStatus.FAILED_DOWNLOAD)
 
     assert card.failed_retry_btn.isVisible() is True
+    assert card.failed_retry_btn.toolTip() == "다시 시작"
     assert card.failed_complete_btn.isVisible() is True
+    assert card.failed_complete_btn.toolTip() == "완료"
+
+    # 호버 시 2번 위치 retry_btn은 비노출되어야 함
+    card.enterEvent(None)
+    assert card.retry_btn.isHidden() is True
 
     with qtbot.waitSignal(card.retry_requested, timeout=1000) as blocker:
         card.failed_retry_btn.click()
@@ -676,20 +678,46 @@ def test_failed_login_required_preserves_ytdl_and_allows_one_click_retry(
     # FAILED_LOGIN_REQUIRED 상태 설정
     card.set_task_status(TaskStatus.FAILED_LOGIN_REQUIRED)
 
-    # 1. 4번 위치 컨트롤에 [Z], [🗨️!], [🍪], [N], [🔄] 노출 검증
+    # 1. 4번 위치 컨트롤에 [Z], [🗨️!], [🍪], [N] 노출 및 [🔄 다시 시작] 제거(비노출) 검증 (쿠키 갱신 시 자동 재개되므로 수동 재시작 불필요)
     assert card.auth_container.isVisible() is True
     assert card.chzzk_badge.isVisible() is True
     assert card.error_info_btn.isVisible() is True
     assert card.cookie_btn.isVisible() is True
     assert card.login_btn.isVisible() is True
-    assert card.failed_retry_btn.isVisible() is True
+    assert card.failed_retry_btn.isHidden() is True
 
-    # 2. 4번 위치 [🔄] 클릭 시 재시도 시그널 방출 검증
-    with qtbot.waitSignal(card.retry_requested, timeout=1000) as blocker:
-        card.failed_retry_btn.click()
+    # 1-1. 호버 시 2번 위치 retry_btn도 비노출되어야 함
+    card.enterEvent(None)
+    assert card.retry_btn.isHidden() is True
+
+    # 2. 유효 미디어가 존재하므로 4번 위치 [✓ 완료] 버튼 노출 및 툴팁 "완료" 검증
+    assert card.failed_complete_btn.isVisible() is True
+    assert card.failed_complete_btn.toolTip() == "완료"
+
+    # 2-1. [✓] 클릭 시 complete_requested 시그널 방출 검증
+    with qtbot.waitSignal(card.complete_requested, timeout=1000) as blocker:
+        card.failed_complete_btn.click()
     assert blocker.args == ["15310191"]
 
     # 3. 디스크의 유효 미디어 및 .ytdl 파일 보존 검증
     assert media_file.exists() is True
     assert media_file.stat().st_size > 0
     assert ytdl_file.exists() is True
+
+
+def test_failed_invalid_hides_retry_buttons_both_top_and_bottom(qtbot):
+    """C05 (FAILED_INVALID) 상태에서 비유효 URL이므로 2번 위치 및 4번 위치에서 다시 시작 버튼이 모두 숨겨지는지 검증."""
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/invalid_format_url",
+        video_no="",
+    )
+    qtbot.addWidget(card)
+    card.show()
+    card.set_task_status(TaskStatus.FAILED_INVALID)
+
+    # 4번 위치 다시 시작 버튼 숨김 검증
+    assert card.failed_retry_btn.isHidden() is True
+
+    # 2번 위치 호버 시 다시 시작 버튼 숨김 검증
+    card.enterEvent(None)
+    assert card.retry_btn.isHidden() is True

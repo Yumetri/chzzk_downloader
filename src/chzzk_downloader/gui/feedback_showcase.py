@@ -656,7 +656,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C05] 실패 - Invalid (FAILED_INVALID) - 제목 'Invalid: {url}', 빨간색 좌측 바, [치지직 뱃지] + [🗨️! 툴팁]",
+            "[C05] 실패 - Invalid (FAILED_INVALID) - 제목 'Invalid: {url}', 빨간색 좌측 바, [치지직 뱃지] + [🗨️! 툴팁] (다시 시작 위젯 제거)",
             card_invalid,
         )
 
@@ -671,7 +671,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C06] 실패 - 로그인 필요 (FAILED_LOGIN_REQUIRED) - 빨간색 바, 2줄 URL, [치지직] + [🗨️!] + [🍪] + [N]",
+            "[C06] 실패 - 로그인 필요 (FAILED_LOGIN_REQUIRED) - 빨간색 바, 2줄 URL, [치지직] + [🗨️!] + [🍪] + [N] (다시 시작 위젯 제거)",
             card_login,
         )
 
@@ -687,7 +687,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C07] 실패 - 다운로드 오류 (FAILED_DOWNLOAD) - 제목 'Download failed: {url}', 주황색 좌측 바, [치지직] + [🗨️! 툴팁]",
+            "[C07] 실패 - 다운로드 오류 (FAILED_DOWNLOAD) - 제목 'Download failed: {url}', 주황색 좌측 바, [치지직] + [🗨️!] + [🔄 다시 시작] + [✓ 완료]",
             card_download_fail,
         )
 
@@ -736,7 +736,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         card_stopped.set_task_status(TaskStatus.STOPPED)
         self._add_card_section(
             scroll_layout,
-            "[C09] 중단/취소 (STOPPED) - 슬레이트 블루 바, 4번: [Z] [🔄] [✓] 멈춘 진행바 45%, 3번: 중지됨 (호버 시 5대 액션 툴바)",
+            "[C09] 중단/취소 (STOPPED) - 슬레이트 블루 바, 4번: [Z] [🔄 다시 시작] [✓ 완료] 멈춘 진행바 45%, 3번: 중지됨 (호버 시 4대 액션 툴바)",
             card_stopped,
         )
 
