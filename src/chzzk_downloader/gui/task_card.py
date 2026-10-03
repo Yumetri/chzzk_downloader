@@ -62,7 +62,8 @@ def _delete_file_safely(file_path: Path | None) -> bool:
             pass
 
     if not targets:
-        return False
+        # 삭제할 본체 파일도, 임시 파일도 이미 디스크에 없음 (외부 선제 삭제 등 정리 완료)
+        return True
 
     import sys
 
@@ -284,6 +285,9 @@ class TaskCardWidget(QFrame):
         self.traceback_str: str = ""
         self.final_file_path: Path | None = None
         self.is_deleted: bool = False
+        self._has_started_download: bool = status == TaskStatus.DOWNLOADING
+        self._was_queued_cancelled: bool = False
+        self._stopped_without_file: bool = False
         self._thumb_loader: ThumbnailLoaderThread | None = None
         self._info_win: Any = None
 
@@ -562,7 +566,7 @@ class TaskCardWidget(QFrame):
         self.stop_btn.clicked.connect(self.trigger_stop_download)
 
         self.progress_bar = QProgressBar(self.vod_downloading_container)
-        self.progress_bar.setFixedHeight(7)
+        self.progress_bar.setFixedHeight(8)
         self.progress_bar.setMinimumWidth(100)
         self.progress_bar.setMaximumWidth(160)
         self.progress_bar.setRange(0, 100)
@@ -745,14 +749,33 @@ class TaskCardWidget(QFrame):
         info_layout.addLayout(bottom_row)
         main_layout.addLayout(info_layout, stretch=1)
 
+    @property
+    def has_local_media_file(self) -> bool:
+        """다운로드 완료 또는 중단 시 실제로 재생/삭제할 수 있는 로컬 파일이 존재하는지 여부를 반환합니다."""
+        target = getattr(self, "final_file_path", None) or self.target_path
+        if target is not None:
+            try:
+                p = Path(target)
+                return p.is_file() and p.stat().st_size > 0
+            except (OSError, ValueError):
+                return False
+        return False
+
     def _show_hover_toolbar(self, visible: bool) -> None:
         """2번 위치 우상단 호버 툴바 버튼들의 가시성을 상태에 따라 제어합니다."""
         if visible:
-            # 파일 삭제 [🗑️]: 파일이 생성된 시점부터 상시 활성화 (DOWNLOADING, STOPPED, COMPLETED)
-            if self.status in (
-                TaskStatus.DOWNLOADING,
-                TaskStatus.STOPPED,
-                TaskStatus.COMPLETED,
+            is_queued_cancelled = getattr(self, "_was_queued_cancelled", False)
+            stopped_without_file = getattr(self, "_stopped_without_file", False)
+            should_hide_file_actions = is_queued_cancelled or stopped_without_file
+
+            # 파일 삭제 [🗑️]: 파일이 없는 취소 카드가 아닌 경우에만 노출
+            if not should_hide_file_actions and (
+                self.status
+                in (
+                    TaskStatus.DOWNLOADING,
+                    TaskStatus.STOPPED,
+                    TaskStatus.COMPLETED,
+                )
             ):
                 self.action_delete_file_btn.show()
             else:
@@ -762,8 +785,10 @@ class TaskCardWidget(QFrame):
             self.open_folder_btn.show()
             self.delete_btn.show()
 
-            # 재생(▶) 버튼: 완료 또는 중단 상태에서 활성화
-            if self.status in (TaskStatus.COMPLETED, TaskStatus.STOPPED):
+            # 재생(▶) 버튼: 완료 또는 중단 상태(파일 없는 취소 제외)에서 활성화
+            if not should_hide_file_actions and (
+                self.status in (TaskStatus.COMPLETED, TaskStatus.STOPPED)
+            ):
                 self.play_btn.show()
             else:
                 self.play_btn.hide()
@@ -977,7 +1002,11 @@ class TaskCardWidget(QFrame):
         """외부(TaskManager)로부터 상태 전이를 수신하여 카드를 갱신합니다."""
         if self.status == status:
             return
+        if self.status == TaskStatus.QUEUED and status == TaskStatus.STOPPED:
+            self._was_queued_cancelled = True
         self.status = status
+        if status == TaskStatus.DOWNLOADING:
+            self._has_started_download = True
         self._update_display()
         self._apply_style()
         if self.underMouse():
@@ -989,6 +1018,7 @@ class TaskCardWidget(QFrame):
 
     def set_completed(self, final_file_path: str | Path) -> None:
         """다운로드 완료 시 호출되어 최종 파일 경로를 보존하고 COMPLETED 상태로 전이합니다."""
+        self._has_started_download = True
         if final_file_path and str(final_file_path).strip():
             self.final_file_path = Path(final_file_path)
         else:
@@ -1125,7 +1155,10 @@ class TaskCardWidget(QFrame):
 
             tip_text = progress.progress_summary
             if tip_text:
-                self.progress_bar.setToolTip(tip_text)
+                if self.progress_bar.toolTip() != tip_text:
+                    self.progress_bar.setToolTip(tip_text)
+                if hasattr(self, "pct_label") and self.pct_label.toolTip() != tip_text:
+                    self.pct_label.setToolTip(tip_text)
 
             self.elapsed_label.setText(progress.elapsed_str or "00:00")
 
@@ -1173,6 +1206,7 @@ class TaskCardWidget(QFrame):
             parent=self,
             text=f"다음 파일이 삭제됩니다:\n{filename_str}",
             title="Chzzk Downloader",
+            is_danger=True,
         )
         if not ok:
             return
@@ -1181,10 +1215,20 @@ class TaskCardWidget(QFrame):
         if self.status == TaskStatus.DOWNLOADING:
             self.request_stop_download.emit(self.task_id)
 
-        # 실제 파일 안전 삭제 수행 (팟플레이어 등 재생 중 삭제 지원)
+        # 실제 파일 안전 삭제 수행 (팟플레이어 등 재생 중 삭제 지원 및 .part 임시 파일 일괄 정리)
+        success = False
         if target:
-            p = Path(target)
-            _delete_file_safely(p)
+            success = _delete_file_safely(Path(target))
+        else:
+            success = True
+
+        if not success:
+            QMessageBox.warning(
+                self,
+                "Chzzk Downloader",
+                f"파일을 삭제할 수 없습니다:\n{filename_str}\n\n다른 프로그램에서 사용 중이거나 쓰기 권한이 없습니다.",
+            )
+            return
 
         # T08 동영상 삭제 토스트 노출
         main_win = self.window()
@@ -1274,6 +1318,12 @@ class TaskCardWidget(QFrame):
         if not self._confirm_stop_dialog():
             return False
 
+        if self.status == TaskStatus.QUEUED:
+            self._was_queued_cancelled = True
+
+        if not self.has_local_media_file:
+            self._stopped_without_file = True
+
         self.request_stop_download.emit(self.task_id)
 
         if self.status != TaskStatus.STOPPED:
@@ -1289,6 +1339,9 @@ class TaskCardWidget(QFrame):
         self.error_type = ""
         self.traceback_str = ""
         self.final_file_path = None
+        self._has_started_download = False
+        self._was_queued_cancelled = False
+        self._stopped_without_file = False
         self.selected_quality = ""
         self.custom_download_dir = None
         self.target_path = None
@@ -1372,7 +1425,7 @@ class TaskCardWidget(QFrame):
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("대기")
 
-        elif self.status in (TaskStatus.COMPLETED, TaskStatus.STOPPED):
+        elif self.status == TaskStatus.COMPLETED:
             if hasattr(self, "downloading_metrics_widget"):
                 self.downloading_metrics_widget.show()
             if hasattr(self, "vod_metrics_widget"):
@@ -1428,6 +1481,68 @@ class TaskCardWidget(QFrame):
 
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("완료")
+
+        elif self.status == TaskStatus.STOPPED:
+            is_queued_cancelled = getattr(self, "_was_queued_cancelled", False)
+            if self.vod_info:
+                self.title_label.setText(self.vod_info.display_name)
+            self.auth_container.hide()
+            self.ready_container.hide()
+            self.vod_downloading_container.hide()
+            self.live_recording_container.hide()
+            self.spinner.stop()
+
+            if is_queued_cancelled:
+                # QUEUED 상태에서 다운로드 전 취소된 경우
+                if hasattr(self, "downloading_metrics_widget"):
+                    self.downloading_metrics_widget.hide()
+                if hasattr(self, "icon_metrics_widget"):
+                    self.icon_metrics_widget.hide()
+                self.status_label.show()
+                self.status_label.setText("중지됨")
+                self.completed_container.hide()
+                if not (self.vod_info and self.vod_info.thumbnail_url):
+                    self.thumb_label.setText("VOD" if self.vod_info else "중지")
+            else:
+                # 일반 STOPPED (C08 완결 규격)
+                if hasattr(self, "downloading_metrics_widget"):
+                    self.downloading_metrics_widget.show()
+                if hasattr(self, "vod_metrics_widget"):
+                    self.vod_metrics_widget.hide()
+                self.status_label.hide()
+
+                dur_str = (
+                    format_duration(self.vod_info.duration) if self.vod_info else ""
+                )
+                file_size_str = ""
+                target = (
+                    getattr(self, "final_file_path", None)
+                    or self.target_path
+                    or getattr(self, "completed_file_path", None)
+                )
+                if target:
+                    p = Path(target)
+                    if p.exists() and p.is_file():
+                        from chzzk_downloader.core.task_models import format_byte_size
+
+                        file_size_str = format_byte_size(p.stat().st_size)
+
+                if hasattr(self, "icon_metrics_widget"):
+                    self.icon_metrics_widget.show()
+                    self.time_metric_label.setText(dur_str or "00:00")
+                    self.size_metric_label.setText(file_size_str or "--")
+
+                self.status_label.setText(
+                    f"중지됨 ({dur_str})" if dur_str else "중지됨"
+                )
+                self.completed_container.show()
+                self.completed_chzzk_badge.show()
+                if self.is_live:
+                    self.completed_live_icon_label.show()
+                else:
+                    self.completed_live_icon_label.hide()
+                if not (self.vod_info and self.vod_info.thumbnail_url):
+                    self.thumb_label.setText("중지")
 
         elif self.status == TaskStatus.DOWNLOADING:
             self.status_label.hide()

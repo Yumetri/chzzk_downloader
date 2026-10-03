@@ -407,9 +407,7 @@ class MainWindow(QMainWindow):
             return
 
         for card in failed_cards:
-            card.status = TaskStatus.ANALYZING
-            card._update_display()
-            card._apply_style()
+            card.reset_for_redownload()
             worker = VodCheckWorker(card.video_no or card.raw_url, parent=None)
             self._recheck_workers.append(worker)
 
@@ -845,7 +843,7 @@ class MainWindow(QMainWindow):
         )
 
     def show_file_deleted_toast(self, name_or_url: str) -> None:
-        """T08: 동영상 파일 삭제 시 반투명 알약형 삭제 토스트를 노출합니다."""
+        """T08: 동영상 파일 삭제 시 반투명 알약형 삭제 토스트를 노출합니다 (2.5초 자동 소멸)."""
         toast_msg = (
             f'<span style="color: #ef4444; font-size: 14px;">🗑</span> '
             f'<span style="color: #ffffff;">{name_or_url}</span>'
@@ -853,7 +851,7 @@ class MainWindow(QMainWindow):
         self.toast.show_toast(
             toast_msg,
             ToastType.ERROR,
-            auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+            auto_dismiss_ms=2500,
         )
 
     def _on_task_failed(
