@@ -42,6 +42,10 @@ def main() -> int:
             ["uv", "run", "--no-sync", "ruff", "format", "--check", "."],
         ),
         ("Pyrefly Type Check", ["uv", "run", "--no-sync", "pyrefly", "check"]),
+        (
+            "Rules Ratchet Check",
+            ["uv", "run", "--no-sync", "python", "tools/check_rules.py"],
+        ),
     ]
 
     if args.fast:

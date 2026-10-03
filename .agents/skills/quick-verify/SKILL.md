@@ -12,8 +12,9 @@ description: Use when the user asks to quickly run all code quality checks (Ruff
 - **1단계 (Ruff Linter)**: `uv run --no-sync ruff check .`
 - **2단계 (Ruff Formatter)**: `uv run --no-sync ruff format --check .`
 - **3단계 (Pyrefly Type Check)**: `uv run --no-sync pyrefly check`
-- **4단계 (Pytest Test Suite)**:
-  - 기본 (전체 검증): `uv run --no-sync pytest` (260+ 테스트 전체)
+- **4단계 (Rules Ratchet Check)**: `uv run --no-sync python tools/check_rules.py`
+- **5단계 (Pytest Test Suite)**:
+  - 기본 (전체 검증): `uv run --no-sync pytest` (310+ 테스트 전체)
   - 고속 모드 (`--fast`): `uv run --no-sync pytest tests/test_ui_feedback_catalog.py` (핵심 카탈로그 스모크 테스트)
 
 ## 2. 에이전트 실행 절차
