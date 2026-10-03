@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from chzzk_downloader.config import SUCCESS_TOAST_DURATION_MS
+from chzzk_downloader.core.errors import classify_error
 from chzzk_downloader.core.task_manager import TaskManager
 from chzzk_downloader.core.task_models import TaskProgress, TaskSpec, TaskStatus
 from chzzk_downloader.core.url_parser import parse_chzzk_vod_url
@@ -677,20 +678,13 @@ class MainWindow(QMainWindow):
         ):
             return
 
-        err_lower = error_msg.lower()
-        if (
-            "login" in err_lower
-            or "로그인" in err_lower
-            or "인증" in err_lower
-            or "adult" in err_lower
-            or "19" in err_lower
-            or "401" in err_lower
-            or "unauthorized" in err_lower
-            or "403" in err_lower
-            or "forbidden" in err_lower
-        ):
+        classified = classify_error(msg=error_msg)
+        if classified == TaskStatus.FAILED_LOGIN_REQUIRED:
             status = TaskStatus.FAILED_LOGIN_REQUIRED
             toast_msg = f"Login required; Please login\n{raw_url}"
+        elif classified == TaskStatus.FAILED_DOWNLOAD:
+            status = TaskStatus.FAILED_DOWNLOAD
+            toast_msg = f"조회 실패: {error_msg}"
         else:
             status = TaskStatus.FAILED_INVALID
             toast_msg = f"Invalid: {raw_url}"
@@ -929,22 +923,15 @@ class MainWindow(QMainWindow):
         if card is None or card.is_deleted or sip.isdeleted(card):
             return
 
-        err_lower = (err_type + " " + msg).lower()
-        if any(
-            k in err_lower
-            for k in (
-                "login",
-                "adult",
-                "성인",
-                "로그인",
-                "인증",
-                "401",
-                "403",
-                "unauthorized",
-                "forbidden",
-            )
+        failed_status = self.task_manager.get_task_status(task_id)
+        if failed_status not in (
+            TaskStatus.FAILED_LOGIN_REQUIRED,
+            TaskStatus.FAILED_INVALID,
+            TaskStatus.FAILED_DOWNLOAD,
         ):
-            failed_status = TaskStatus.FAILED_LOGIN_REQUIRED
+            failed_status = classify_error(exc_type=err_type, msg=msg)
+
+        if failed_status == TaskStatus.FAILED_LOGIN_REQUIRED:
             self.toast.show_action_toast(
                 '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
                 '<span style="color: #ffffff;">쿠키를 갱신하세요</span>',
@@ -953,17 +940,13 @@ class MainWindow(QMainWindow):
                     ("N", "#03c75a", self._on_naver_login_clicked, "네이버 로그인"),
                 ],
             )
-        elif any(
-            k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")
-        ):
-            failed_status = TaskStatus.FAILED_INVALID
+        elif failed_status == TaskStatus.FAILED_INVALID:
             self.toast.show_toast(
                 f"Invalid: {msg}",
                 ToastType.ERROR,
                 auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
             )
         else:
-            failed_status = TaskStatus.FAILED_DOWNLOAD
             self.toast.show_toast(
                 f"다운로드 실패: {msg}",
                 ToastType.ERROR,

@@ -14,6 +14,7 @@ import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from chzzk_downloader.core.errors import classify_error
 from chzzk_downloader.core.task_models import TaskProgress, TaskSpec, TaskStatus
 from chzzk_downloader.core.task_queue import TaskQueue
 
@@ -189,30 +190,7 @@ class TaskManager:
     ) -> bool:
         """작업 실패를 보고하고 에러 유형에 따른 세분화된 상태 매핑 및 원자적 슬롯 승계를 수행합니다."""
         events: list[tuple] = []
-        err_lower = (err_type + " " + msg).lower()
-
-        # 세분화된 실패 상태 매핑
-        if any(
-            k in err_lower
-            for k in (
-                "login",
-                "adult",
-                "성인",
-                "로그인",
-                "인증",
-                "401",
-                "403",
-                "unauthorized",
-                "forbidden",
-            )
-        ):
-            new_status = TaskStatus.FAILED_LOGIN_REQUIRED
-        elif any(
-            k in err_lower for k in ("notfound", "invalid", "잘못된", "비공개", "404")
-        ):
-            new_status = TaskStatus.FAILED_INVALID
-        else:
-            new_status = TaskStatus.FAILED_DOWNLOAD
+        new_status = classify_error(exc_type=err_type, msg=msg)
 
         with self._lock:
             if task_id not in self._specs:
