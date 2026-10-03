@@ -310,7 +310,7 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "_download_workers"):
             for worker in list(self._download_workers.values()):
-                self._detach_download_worker(worker)
+                self._detach_download_worker(worker, disconnect_signals=True)
             self._download_workers.clear()
 
         if hasattr(self, "_settings_window") and self._settings_window is not None:
@@ -684,8 +684,23 @@ class MainWindow(QMainWindow):
             auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
         )
 
-    def _detach_download_worker(self, worker: VodDownloadWorker) -> None:
+    def _detach_download_worker(
+        self, worker: VodDownloadWorker, disconnect_signals: bool = False
+    ) -> None:
         """다운로드 워커를 안전하게 중지 및 분리하여 백그라운드에서 정리되도록 보존합니다."""
+        if disconnect_signals:
+            for sig in (
+                worker.progress_updated,
+                worker.download_finished,
+                worker.download_failed,
+                worker.download_stopped,
+                worker.finished,
+            ):
+                try:
+                    sig.disconnect()
+                except Exception:
+                    pass
+
         if worker.isRunning():
             worker.cancel()
             worker.setParent(None)

@@ -35,16 +35,25 @@ from chzzk_downloader.gui.dialogs import ask_confirm_dialog
 _DETACHED_LOADERS: set[QThread] = set()
 
 
-def _delete_file_safely(file_path: Path) -> bool:
+def _delete_file_safely(file_path: Path | None) -> bool:
     """Windows Shell 휴지통 이동 또는 unlink를 통한 안전한 파일 삭제 (재생 중 삭제 및 임시 .part 파일 정리 지원)."""
+    if file_path is None:
+        return False
+    path_str = str(file_path).strip()
+    if not path_str or path_str in (".", "/"):
+        return False
+
+    stem = file_path.stem.strip()
+    if not stem:
+        return False
+
     targets: list[Path] = []
-    if file_path.exists():
+    if file_path.is_file():
         targets.append(file_path)
 
     # yt-dlp 임시 파일 (.part, .ytdl 등) 함께 탐색
     parent_dir = file_path.parent
-    if parent_dir.exists():
-        stem = file_path.stem
+    if parent_dir.exists() and parent_dir.is_dir():
         try:
             for extra in parent_dir.glob(f"{stem}*"):
                 if extra.is_file() and extra not in targets:
@@ -53,7 +62,7 @@ def _delete_file_safely(file_path: Path) -> bool:
             pass
 
     if not targets:
-        return True
+        return False
 
     import sys
 
@@ -1438,7 +1447,9 @@ class TaskCardWidget(QFrame):
                     self.vod_metrics_widget.hide()
                 if hasattr(self, "icon_metrics_widget"):
                     self.icon_metrics_widget.show()
+                self.spinner.start()
             else:
+                self.spinner.stop()
                 self.live_recording_container.hide()
                 self.vod_downloading_container.show()
                 self.progress_bar.show()
@@ -1446,8 +1457,6 @@ class TaskCardWidget(QFrame):
                     self.icon_metrics_widget.hide()
                 if hasattr(self, "vod_metrics_widget"):
                     self.vod_metrics_widget.show()
-
-            self.spinner.start()
 
         elif self.status == TaskStatus.FAILED_LOGIN_REQUIRED:
             self.title_label.setText(f"Login required; Please login\n{self.raw_url}")

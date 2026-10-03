@@ -245,7 +245,7 @@ def test_start_download_and_file_duplicate_handling(qtbot, tmp_path, temp_settin
     assert card.ready_container.isHidden() is True
     assert card.downloading_container.isHidden() is False
     assert card.recording_label.text() == "녹화 중…"
-    assert card.spinner._timer.isActive() is True
+    assert card.spinner._timer.isActive() is False
 
     # 2. 동일 파일 생성
     expected_file.touch()
