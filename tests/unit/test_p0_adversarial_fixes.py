@@ -55,9 +55,10 @@ def test_vod_downloading_must_not_start_live_spinner(qtbot):
     )
 
 
-def test_detach_download_worker_disconnects_all_signals(qapp):
+def test_detach_download_worker_disconnects_all_signals(qtbot):
     """MainWindow._detach_download_worker 호출 시 VodDownloadWorker의 모든 시그널이 정상적으로 disconnect되는지 검증."""
     main_win = MainWindow()
+    qtbot.addWidget(main_win)
     spec = TaskSpec(
         task_id="test_detach_p0",
         video_url="https://chzzk.naver.com/video/1",

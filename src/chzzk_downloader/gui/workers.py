@@ -298,7 +298,7 @@ class VodDownloadWorker(QThread):
         target_path = Path(self.task_spec.save_path)
         temp_ytdl = Path(str(target_path) + ".ytdl")
         try:
-            if temp_ytdl.is_file():
+            if temp_ytdl.is_file() and delete_media:
                 temp_ytdl.unlink(missing_ok=True)
         except OSError:
             pass

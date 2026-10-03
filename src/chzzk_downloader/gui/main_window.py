@@ -44,6 +44,8 @@ class TaskListWidget(QWidget):
     download_blocked = pyqtSignal(str)
     card_download_requested = pyqtSignal(object, object)  # (TaskCardWidget, TaskSpec)
     card_stop_requested = pyqtSignal(str)  # (task_id)
+    card_retry_requested = pyqtSignal(str)  # (task_id)
+    card_complete_requested = pyqtSignal(str)  # (task_id)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -151,6 +153,8 @@ class TaskListWidget(QWidget):
             )
         if hasattr(card, "request_stop_download"):
             card.request_stop_download.connect(self.card_stop_requested.emit)
+        card.retry_requested.connect(self.card_retry_requested.emit)
+        card.complete_requested.connect(self.card_complete_requested.emit)
 
         self.refresh_state()
         return item
@@ -234,6 +238,12 @@ class MainWindow(QMainWindow):
         )
         self.task_list_widget.card_stop_requested.connect(
             self._on_card_request_stop_download
+        )
+        self.task_list_widget.card_retry_requested.connect(
+            self._on_card_retry_requested
+        )
+        self.task_list_widget.card_complete_requested.connect(
+            self._on_card_complete_requested
         )
         self.task_list = self.task_list_widget.list_widget
         self.empty_label = self.task_list_widget.empty_label
@@ -803,14 +813,7 @@ class MainWindow(QMainWindow):
         if self._download_workers.get(task_id) is worker:
             self._download_workers.pop(task_id, None)
 
-            # 이전 워커 정리 중 대기 등록된 신규 작업이 있으면 바통을 이어받아 시작
             pending_spec = self._pending_vod_starts.pop(task_id, None)
-            if (
-                pending_spec is not None
-                and self.task_manager.get_task_status(task_id) == TaskStatus.DOWNLOADING
-            ):
-                self._start_vod_download(task_id)
-                return
 
             # 아직 DOWNLOADING 상태인 경우 슬롯 회수 확정
             if self.task_manager.get_task_status(task_id) == TaskStatus.DOWNLOADING:
@@ -822,6 +825,18 @@ class MainWindow(QMainWindow):
                         "WorkerTerminated",
                         "워커 스레드가 비정상 종료되었습니다.",
                     )
+
+            # 이전 워커 정리 중 대기 등록된 신규 작업이 있으면 바통을 이어받아 시작
+            if pending_spec is not None:
+                current_status = self.task_manager.get_task_status(task_id)
+                if current_status in (
+                    TaskStatus.STOPPED,
+                    TaskStatus.FAILED_DOWNLOAD,
+                    TaskStatus.FAILED_LOGIN_REQUIRED,
+                ):
+                    self.task_manager.retry_task(task_id)
+                elif current_status == TaskStatus.DOWNLOADING:
+                    self._start_vod_download(task_id)
         if not sip.isdeleted(worker):
             worker.setParent(None)
 
@@ -967,6 +982,68 @@ class MainWindow(QMainWindow):
             worker.cancel()
         else:
             self.task_manager.cancel_task(task_id)
+
+    def _on_card_retry_requested(self, task_id: str) -> None:
+        """카드의 재시도 요청을 수신하여 TaskManager를 통해 작업 재개를 트리거합니다."""
+        worker = self._download_workers.get(task_id)
+        if worker is not None and worker.isRunning():
+            spec = self.task_manager.get_task_spec(task_id)
+            if spec is None:
+                card = self.task_list_widget.find_task_card_by_id(task_id)
+                if card is not None:
+                    spec = card.get_task_spec()
+            if spec is not None:
+                self._pending_vod_starts[task_id] = spec
+                self.toast.show_toast(
+                    '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
+                    '<span style="color: #ffffff;">이전 작업 정리 완료 후 자동으로 시작됩니다.</span>',
+                    ToastType.WARNING,
+                    auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+                )
+            return
+
+        spec = self.task_manager.get_task_spec(task_id)
+        if spec is None:
+            card = self.task_list_widget.find_task_card_by_id(task_id)
+            if card is not None:
+                spec = card.get_task_spec()
+                self.task_manager.add_task(spec)
+
+        self.task_manager.retry_task(task_id)
+
+    def _on_card_complete_requested(self, task_id: str) -> None:
+        """카드의 완료 확정 요청을 수신하여 유효 파일 검증 후 TaskManager를 통해 COMPLETED 상태로 확정합니다."""
+        card = self.task_list_widget.find_task_card_by_id(task_id)
+        if card is None:
+            return
+
+        target = card.final_file_path or card.target_path
+        if not target:
+            self.toast.show_toast(
+                '<span style="color: #f59e0b;">⚠️</span> 완료 확정할 미디어 파일이 디스크에 존재하지 않습니다.',
+                ToastType.WARNING,
+                auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+            )
+            return
+
+        target_path = Path(target)
+        try:
+            if not target_path.is_file() or target_path.stat().st_size == 0:
+                self.toast.show_toast(
+                    '<span style="color: #f59e0b;">⚠️</span> 완료 확정할 미디어 파일이 디스크에 존재하지 않습니다.',
+                    ToastType.WARNING,
+                    auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+                )
+                return
+        except OSError:
+            self.toast.show_toast(
+                '<span style="color: #f59e0b;">⚠️</span> 완료 확정할 미디어 파일에 접근할 수 없습니다.',
+                ToastType.WARNING,
+                auto_dismiss_ms=SUCCESS_TOAST_DURATION_MS,
+            )
+            return
+
+        self.task_manager.complete_task(task_id, str(target_path))
 
     def _on_task_removed(self, task_id: str) -> None:
         """TaskManager로부터 작업 제거 알림을 수신하여 목록에서 카드를 제거합니다."""
