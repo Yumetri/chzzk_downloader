@@ -574,7 +574,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         # [C02] READY
         self._add_card_section(
             scroll_layout,
-            "[C02] 정상 대기 (READY) - 마우스 호버 시 2번 위치에 [📁 폴더 열기] + [✕ 목록 삭제]",
+            "[C02] 정상 대기 (READY) - 4번: 화질/확장자 드롭다운 + [구간 설정] (정식 VOD 전용) + 📁 + ▶ / 2번 호버: [📁] [✕]",
             TaskCardWidget(
                 raw_url="https://chzzk.naver.com/video/15021267",
                 status=TaskStatus.READY,

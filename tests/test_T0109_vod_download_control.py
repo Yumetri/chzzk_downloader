@@ -331,7 +331,10 @@ def test_downloading_vod_rejects_duplicate_url(main_window, qtbot):
     """VOD가 다운로드 중인 상태에서 동일 URL 입력 시 모달 없이 즉시 거부 토스트를 노출하는지 검증."""
     update_current_settings(vod_auto_download=True)
     mock_vod = VodInfo(
-        video_no="15016450", video_title="진행 중 테스트", channel_name="스트리머A"
+        video_no="15016450",
+        video_title="진행 중 테스트",
+        channel_name="스트리머A",
+        can_section_download=False,
     )
 
     with patch("chzzk_downloader.gui.workers.extract_vod_info", return_value=mock_vod):
@@ -441,7 +444,10 @@ def test_analyzing_and_ready_vod_rejects_duplicate_url(main_window, qtbot):
 def test_rapid_successive_same_url_inputs_blocked(main_window, qtbot):
     """동일 URL이 아주 짧은 시간 간격으로 연속 입력되었을 때 중복 생성을 즉시 차단하는지 검증."""
     mock_vod = VodInfo(
-        video_no="15016450", video_title="연속 입력 테스트", channel_name="스트리머A"
+        video_no="15016450",
+        video_title="연속 입력 테스트",
+        channel_name="스트리머A",
+        can_section_download=False,
     )
 
     with patch("chzzk_downloader.gui.workers.extract_vod_info", return_value=mock_vod):
@@ -568,6 +574,7 @@ def test_vod_auto_download_on_downloads_with_settings_default_quality_and_extens
         video_title="자동 다운로드 화질 테스트",
         channel_name="스트리머A",
         duration=1800,
+        can_section_download=False,
         formats=[
             VodFormatInfo(format_id="1080p", height=1080, fps=60.0),
             VodFormatInfo(format_id="720p", height=720, fps=30.0),

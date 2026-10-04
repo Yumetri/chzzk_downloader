@@ -5,7 +5,37 @@
 
 ---
 
-## 1. 사용자 질의·코멘트 우선 응답 및 진행 방안 사전 승인 원칙 [필수]
+## 0. 협업 라이프사이클 7단계 상태 머신 (Phase 1 ~ Phase 7)
+
+에이전트는 모든 이슈·기능 구현 시 임의로 단계를 건너뛰지 않고 아래 P1~P7 상태 머신을 순차적으로 전이한다:
+
+```mermaid
+stateDiagram-v2
+    [*] --> P1_PLAN: 작업 시작 / 사용자 요청
+    P1_PLAN --> P2_TDD_RED: [가드 1] 계획 브리핑 및 사용자 승인
+    P2_TDD_RED --> P3_TDD_GREEN: [가드 2] pytest 실패(Red) 실행 로그 확인
+    P3_TDD_GREEN --> P4_ADVERSARIAL: [가드 3] 최소 구현으로 pytest 통과(Green)
+    P4_ADVERSARIAL --> P5_VERIFY: [가드 4] 서브에이전트 감사 & 경계값 TDD 보강
+    P5_VERIFY --> P6_HANDOFF: [가드 5] 4대 검증(Ruff, Pyrefly, Rules, Pytest) 100% 통과
+    P6_HANDOFF --> P7_SHIP: [가드 6] reports/ HTML 보고서 존재 + 6대 Handoff 양식 출력
+    P7_SHIP --> [*]: [가드 7] 사용자 명시적 커밋/푸시 승인
+```
+
+| Phase | 단계명 | 진입 및 완료 가드 (Transition Guard) | 핵심 산출물 |
+| :--- | :--- | :--- | :--- |
+| **P1** | **Plan & Briefing** | 사용자 요구 분석 ➔ 기술적 답변 및 작업 계획·TDD 시나리오 브리핑 ➔ 사용자 승인 | 계획 브리핑 |
+| **P2** | **TDD Red** | 프로덕션 수정 전 실패하는 테스트 작성 ➔ `pytest` 실패(Red) 실행 로그 기계 확인 | 실패 테스트 |
+| **P3** | **TDD Green** | 최소 프로덕션 코드 구현 ➔ 해당 테스트 통과(Green) | 통과 코드 |
+| **P4** | **Adversarial Audit** | **에이전트 자발적 서브에이전트 가동** ➔ 엣지 케이스 감사 ➔ 경계값 TDD 보강 | 감사 리포트 & 보강 테스트 |
+| **P5** | **4대 기계 검증** | `ruff`, `pyrefly`, `check_rules.py`, `pytest` 전수 실행 ➔ 0 error 통과 | 4대 검증 로그 |
+| **P6** | **Handoff & Report** | 아키텍처 변경 시 `reports/*.html` 생성 ➔ `AGENT_WORKFLOW.md` §3 6대 Handoff 양식 출력 | HTML 보고서, Handoff |
+| **P7** | **Ship** | 사용자 최종 승인 ➔ Git 커밋, 데스크톱 동기화(`desktop-sync`), 푸시/PR | Git 커밋 & PR |
+
+- 기계 검증 가드: `tools/check_workflow.py`를 실행하여 현재 단계의 필수 산출물과 검증 요건을 기계적으로 확인한다.
+
+---
+
+## 1. 사용자 질의·코멘트 우선 응답 및 진행 방안 사전 승인 원칙 [P1 가드]
 
 사용자가 질문이나 피드백, 코멘트를 제시한 경우 임의로 다음 단계 명령(git push, 브랜치 전환, 코드 수정 등)을 앞서서 독단적으로 실행해서는 안 되며, 반드시 아래 3단계를 거쳐야 합니다:
 

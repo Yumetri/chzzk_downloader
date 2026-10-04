@@ -652,6 +652,12 @@ class MainWindow(QMainWindow):
 
         self._start_vod_check(card, video_no)
 
+    def apply_vod_check_result(
+        self, info: VodInfo, card: TaskCardWidget | None = None
+    ) -> None:
+        """VOD 정보 조회 성공 결과를 카드에 반영하고 설정에 따라 후속 작업을 처리합니다."""
+        self._on_vod_check_success(info, card)
+
     def _on_vod_check_success(
         self, info: VodInfo, card: TaskCardWidget | None = None
     ) -> None:
@@ -666,11 +672,13 @@ class MainWindow(QMainWindow):
             return
         card.update_with_vod_info(info)
 
-        # VOD 자동 다운로드 분기 (T0109)
+        # VOD 자동 다운로드 분기 (T0109, T0601)
+        # 방안 B: 정식 VOD(구간 다운로드 가능)는 구간 설정을 위해 항상 READY 상태로 대기
+        # 빠른 다시보기(구간 설정 불가)인 경우에만 vod_auto_download 설정에 따라 즉시 시작
         from chzzk_downloader.core.settings_manager import get_current_settings
 
         settings = get_current_settings()
-        if settings.vod_auto_download:
+        if settings.vod_auto_download and not info.can_section_download:
             card.trigger_start_download()
 
     def _on_vod_check_failed(

@@ -602,8 +602,26 @@ class TaskCardWidget(QFrame):
         )
         self.start_btn.clicked.connect(self.trigger_start_download)
 
+        self.section_btn = QPushButton("구간 설정", self.ready_container)
+        self.section_btn.setToolTip(
+            "구간 설정 (키프레임 위치에 따라 수 초 오차가 발생할 수 있습니다)"
+        )
+        self.section_btn.setFixedHeight(22)
+        self.section_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.section_btn.setStyleSheet(
+            "QPushButton { background-color: #2a2a2a; color: #f3f4f6; border: 1px solid #4b5563; border-radius: 3px; padding: 1px 6px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #374151; }"
+        )
+        self.section_btn.clicked.connect(self._on_section_btn_clicked)
+
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        self.section_popup = SectionPopup(self)
+        self.section_popup.section_changed.connect(self._on_section_validity_changed)
+
         ready_layout.addWidget(self.quality_combo)
         ready_layout.addWidget(self.ext_combo)
+        ready_layout.addWidget(self.section_btn)
         ready_layout.addWidget(self.folder_btn)
         ready_layout.addWidget(self.start_btn)
         self.ready_container.hide()
@@ -1064,6 +1082,7 @@ class TaskCardWidget(QFrame):
     def deleteLater(self) -> None:  # noqa: N802
         self.is_deleted = True
         self.close_info_window()
+        self.section_popup.hide()
         self.spinner.stop()
         if hasattr(self, "thumb_spinner") and not sip.isdeleted(self.thumb_spinner):
             self.thumb_spinner.stop()
@@ -1073,6 +1092,7 @@ class TaskCardWidget(QFrame):
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         self.is_deleted = True
         self.close_info_window()
+        self.section_popup.hide()
         self.spinner.stop()
         if hasattr(self, "thumb_spinner") and not sip.isdeleted(self.thumb_spinner):
             self.thumb_spinner.stop()
@@ -1173,6 +1193,17 @@ class TaskCardWidget(QFrame):
             self.custom_download_dir = Path(selected).resolve()
             self.folder_btn.setToolTip(f"저장 폴더: {self.custom_download_dir}")
 
+    def _on_section_btn_clicked(self) -> None:
+        """구간 설정 팝업을 버튼 아래에 표시하거나 숨깁니다."""
+        if self.section_popup.isVisible():
+            self.section_popup.hide()
+        else:
+            self.section_popup.show_below(self.section_btn)
+
+    def _on_section_validity_changed(self, is_valid: bool) -> None:
+        """구간 설정 유효성에 따라 다운로드 시작 버튼 활성화 상태를 연동합니다."""
+        self.start_btn.setEnabled(is_valid)
+
     def _prompt_duplicate_resolution(self, filename: str) -> str:
         """동일 파일명 존재 시 처리 방법('overwrite', 'rename', 'cancel')을 묻는 대화상자를 띄웁니다."""
         msg_box = QMessageBox(self)
@@ -1209,8 +1240,11 @@ class TaskCardWidget(QFrame):
             or settings.default_quality
         )
         save_dir = self.custom_download_dir or settings.download_dir
+        s_start, s_end = self.section_popup.get_section_range()
         if self.vod_info:
-            filename = generate_vod_filename(self.vod_info, ext=ext)
+            filename = generate_vod_filename(
+                self.vod_info, ext=ext, section_start=s_start, section_end=s_end
+            )
             target = save_dir / filename
         else:
             target = save_dir
@@ -1224,6 +1258,8 @@ class TaskCardWidget(QFrame):
             selected_quality=quality,
             selected_ext=ext,
             save_path=self.target_path or target,
+            section_start=s_start,
+            section_end=s_end,
         )
 
     def set_task_status(self, status: TaskStatus) -> None:
@@ -1499,12 +1535,20 @@ class TaskCardWidget(QFrame):
             self.download_blocked.emit(f"저장 폴더를 생성할 수 없습니다: {e}")
             return False
 
-        ext = (
-            self.ext_combo.currentText()
-            if hasattr(self, "ext_combo") and self.ext_combo.currentText()
-            else settings.file_extension
+        s_start, s_end = self.section_popup.get_section_range()
+        if s_start is not None or s_end is not None:
+            from chzzk_downloader.core.section_parser import validate_section
+
+            try:
+                validate_section(s_start, s_end, duration=float(self.vod_info.duration))
+            except ValueError as e:
+                self.download_blocked.emit(f"⚠️ 올바른 구간을 입력해주세요: {e}")
+                return False
+
+        ext = self.ext_combo.currentText() or settings.file_extension
+        filename = generate_vod_filename(
+            self.vod_info, ext=ext, section_start=s_start, section_end=s_end
         )
-        filename = generate_vod_filename(self.vod_info, ext=ext)
         target_path = save_dir / filename
 
         # 동일한 파일명이 이미 존재할 경우 (옵션 A)
@@ -1518,6 +1562,8 @@ class TaskCardWidget(QFrame):
                 return False
         else:
             final_path = target_path
+
+        self.section_popup.hide()
 
         self.target_path = final_path
         if self.quality_combo.currentText():
@@ -1584,6 +1630,8 @@ class TaskCardWidget(QFrame):
             self.ext_combo.blockSignals(True)
             self.ext_combo.setCurrentText(settings.file_extension)
             self.ext_combo.blockSignals(False)
+
+        self.section_popup.reset()
 
         self.status = TaskStatus.ANALYZING
         self._update_display()
@@ -1988,6 +2036,13 @@ class TaskCardWidget(QFrame):
             self.ext_combo.blockSignals(True)
             self.ext_combo.setCurrentText(settings.file_extension)
             self.ext_combo.blockSignals(False)
+
+        if info.can_section_download:
+            self.section_btn.show()
+            self.section_popup.set_duration(float(info.duration))
+        else:
+            self.section_btn.hide()
+
         self._update_display()
         self._apply_style()
         if info.thumbnail_url:

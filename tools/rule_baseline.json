@@ -1,7 +1,7 @@
 {
   "R1-core-qt": 1,
-  "R3-hasattr": 64,
-  "R3-getattr": 32,
+  "R3-hasattr": 63,
+  "R3-getattr": 31,
   "R3-sip": 24,
   "R4-blind-except": 59,
   "R6-ui-io": 2,

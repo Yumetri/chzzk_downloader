@@ -44,6 +44,9 @@ class VodInfo:
     duration: int = 0
     formats: list[VodFormatInfo] = field(default_factory=list)
     live_open_date: str = ""  # YYYY-MM-DD (라이브 시작일)
+    can_section_download: bool = (
+        True  # 정식 VOD(DASH)는 True, 빠른 다시보기(HLS)는 False
+    )
 
     @property
     def display_name(self) -> str:
@@ -101,13 +104,16 @@ def _ensure_chzzk_hook() -> None:
                 and isinstance(res["content"], dict)
             ):
                 self._chzzk_live_open_date = res["content"].get("liveOpenDate")
+                self._chzzk_in_key = res["content"].get("inKey")
             return res
 
         def _hooked_real_extract(self: Any, url: str) -> Any:
             self._chzzk_live_open_date = None
+            self._chzzk_in_key = None
             info = orig_real_extract(self, url)
-            if getattr(self, "_chzzk_live_open_date", None):
+            if self._chzzk_live_open_date:
                 info["live_open_date"] = self._chzzk_live_open_date
+            info["in_key"] = self._chzzk_in_key
             return info
 
         CHZZKVideoIE._download_json = _hooked_download_json
@@ -154,6 +160,29 @@ def _parse_live_open_date(data: Mapping[str, Any]) -> str:
             return f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
 
     return ""
+
+
+def _determine_section_support(
+    data: Mapping[str, Any], formats: list[VodFormatInfo]
+) -> bool:
+    """VOD 메타데이터 및 스트림 형식을 분석하여 구간 다운로드 지원 여부를 판별합니다."""
+    if data.get("can_section_download") is False:
+        return False
+    if "in_key" in data and data.get("in_key") is None:
+        # 치지직 빠른 다시보기(HLS 임시 스트림, inKey 누락)
+        return False
+    if formats:
+        has_mpd = any(
+            "mpd" in fmt.url.lower() or "dash" in fmt.format_id.lower()
+            for fmt in formats
+        )
+        all_hls = all(
+            "m3u8" in fmt.url.lower() or "hls" in fmt.format_id.lower()
+            for fmt in formats
+        )
+        if all_hls and not has_mpd:
+            return False
+    return True
 
 
 def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInfo:
@@ -235,6 +264,7 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
     duration = int(data.get("duration") or 0)
 
     live_open_date = _parse_live_open_date(data)
+    can_section_download = _determine_section_support(data, formats_list)
 
     return VodInfo(
         video_no=video_no,
@@ -244,4 +274,5 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
         duration=duration,
         formats=formats_list,
         live_open_date=live_open_date,
+        can_section_download=can_section_download,
     )

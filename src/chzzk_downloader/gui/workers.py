@@ -208,6 +208,16 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
     if has_valid_cookies():
         opts["cookiefile"] = str(get_cookie_file_path())
 
+    if task_spec.section_start is not None or task_spec.section_end is not None:
+        from yt_dlp.utils import download_range_func
+
+        s_start = (
+            task_spec.section_start if task_spec.section_start is not None else 0.0
+        )
+        opts["download_ranges"] = cast(Any, download_range_func)(
+            [], [(s_start, task_spec.section_end)]
+        )
+
     return opts
 
 
