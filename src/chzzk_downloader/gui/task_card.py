@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
+    QAction,
     QColor,
+    QContextMenuEvent,
+    QCursor,
     QEnterEvent,
     QHideEvent,
     QPainter,
@@ -18,15 +21,18 @@ from PyQt6.QtGui import (
     QShowEvent,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -278,6 +284,8 @@ class TaskCardWidget(QFrame):
     download_blocked = pyqtSignal(str)
     request_start_download = pyqtSignal(object)  # (TaskSpec)
     request_stop_download = pyqtSignal(str)  # (task_id)
+    retry_requested = pyqtSignal(str)  # (task_id)
+    complete_requested = pyqtSignal(str)  # (task_id)
 
     def __init__(
         self,
@@ -316,6 +324,7 @@ class TaskCardWidget(QFrame):
         self.custom_download_dir: Path | None = None
         self.target_path: Path | None = None
         self.selected_quality: str = ""
+        self.last_progress: TaskProgress | None = None
 
         self._init_ui()
         if self.vod_info:
@@ -412,7 +421,20 @@ class TaskCardWidget(QFrame):
         self.play_btn.hide()
         top_row.addWidget(self.play_btn)
 
-        # 2-3. 파일 삭제(🗑️) 버튼 (M11 모달 연동 및 안전 삭제)
+        # 2-3. 다시 시작(🔄) 버튼 (STOPPED, FAILED_DOWNLOAD 상태에서 활성화)
+        self.retry_btn = QPushButton("🔄", self)
+        self.retry_btn.setToolTip("다시 시작")
+        self.retry_btn.setFixedSize(24, 24)
+        self.retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retry_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #888888; border: none; font-size: 13px; }"
+            "QPushButton:hover { background-color: rgba(0, 255, 163, 0.2); color: #00ffa3; border-radius: 3px; }"
+        )
+        self.retry_btn.clicked.connect(self._on_retry_clicked)
+        self.retry_btn.hide()
+        top_row.addWidget(self.retry_btn)
+
+        # 2-4. 파일 삭제(🗑️) 버튼 (M11 모달 연동 및 안전 삭제)
         self.action_delete_file_btn = QPushButton("🗑️", self)
         self.action_delete_file_btn.setToolTip("파일 삭제")
         self.action_delete_file_btn.setFixedSize(24, 24)
@@ -501,10 +523,34 @@ class TaskCardWidget(QFrame):
         self.cookie_btn.clicked.connect(self.request_open_cookies.emit)
         self.login_btn.clicked.connect(self.request_naver_login.emit)
 
+        self.failed_retry_btn = QPushButton("🔄", self.auth_container)
+        self.failed_retry_btn.setToolTip("다시 시작")
+        self.failed_retry_btn.setFixedSize(24, 22)
+        self.failed_retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.failed_retry_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #888888; border: none; font-size: 13px; }"
+            "QPushButton:hover { background-color: rgba(0, 255, 163, 0.2); color: #00ffa3; border-radius: 3px; }"
+        )
+        self.failed_retry_btn.clicked.connect(self._on_retry_clicked)
+        self.failed_retry_btn.hide()
+
+        self.failed_complete_btn = QPushButton("✓", self.auth_container)
+        self.failed_complete_btn.setToolTip("완료")
+        self.failed_complete_btn.setFixedSize(24, 22)
+        self.failed_complete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.failed_complete_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #10b981; border: none; font-size: 13px; font-weight: bold; }"
+            "QPushButton:hover { background-color: rgba(16, 185, 129, 0.2); border-radius: 3px; }"
+        )
+        self.failed_complete_btn.clicked.connect(self._on_complete_clicked)
+        self.failed_complete_btn.hide()
+
         auth_layout.addWidget(self.chzzk_badge)
         auth_layout.addWidget(self.error_info_btn)
         auth_layout.addWidget(self.cookie_btn)
         auth_layout.addWidget(self.login_btn)
+        auth_layout.addWidget(self.failed_retry_btn)
+        auth_layout.addWidget(self.failed_complete_btn)
         self.auth_container.hide()
 
         # 4-2. 다운로드 대기 컨테이너 ([최고화질 드롭다운] [기본 확장자] [📁] [▶])
@@ -599,10 +645,13 @@ class TaskCardWidget(QFrame):
             "QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }"
         )
 
+        self.progress_bar.installEventFilter(self)
+
         self.pct_label = QLabel("0%", self.vod_downloading_container)
         self.pct_label.setStyleSheet(
             "color: #d1d5db; font-size: 11px; min-width: 24px;"
         )
+        self.pct_label.installEventFilter(self)
 
         vod_downloading_layout.addWidget(self.vod_chzzk_badge)
         vod_downloading_layout.addWidget(self.stop_btn)
@@ -678,6 +727,65 @@ class TaskCardWidget(QFrame):
         completed_layout.addWidget(self.completed_live_icon_label)
         self.completed_container.hide()
 
+        # 4-6. 중단 상태 컨테이너 ([Z] 뱃지 + [🔄] 다시 시작 + [✓] 완료 확정 + 멈춘 프로그레스바 + {N}%)
+        self.stopped_container = QWidget(self.action_container)
+        stopped_layout = QHBoxLayout(self.stopped_container)
+        stopped_layout.setContentsMargins(0, 0, 0, 0)
+        stopped_layout.setSpacing(6)
+
+        self.stopped_chzzk_badge = QPushButton("Z", self.stopped_container)
+        self.stopped_chzzk_badge.setFixedSize(24, 22)
+        self.stopped_chzzk_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stopped_chzzk_badge.setStyleSheet(
+            "QPushButton { background-color: #000000; color: #00ffa3; border: none; border-radius: 3px; font-weight: 900; font-size: 11px; padding: 0; }"
+            "QPushButton:hover { background-color: #1f2937; }"
+        )
+        self.stopped_chzzk_badge.clicked.connect(self._on_chzzk_badge_clicked)
+
+        self.stopped_retry_btn = QPushButton("🔄", self.stopped_container)
+        self.stopped_retry_btn.setToolTip("다시 시작")
+        self.stopped_retry_btn.setFixedSize(24, 22)
+        self.stopped_retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stopped_retry_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #888888; border: none; font-size: 13px; }"
+            "QPushButton:hover { background-color: rgba(0, 255, 163, 0.2); color: #00ffa3; border-radius: 3px; }"
+        )
+        self.stopped_retry_btn.clicked.connect(self._on_retry_clicked)
+
+        self.stopped_complete_btn = QPushButton("✓", self.stopped_container)
+        self.stopped_complete_btn.setToolTip("완료")
+        self.stopped_complete_btn.setFixedSize(24, 22)
+        self.stopped_complete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stopped_complete_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #10b981; border: none; font-size: 13px; font-weight: bold; }"
+            "QPushButton:hover { background-color: rgba(16, 185, 129, 0.2); border-radius: 3px; }"
+        )
+        self.stopped_complete_btn.clicked.connect(self._on_complete_clicked)
+
+        self.stopped_progress_bar = QProgressBar(self.stopped_container)
+        self.stopped_progress_bar.setFixedHeight(8)
+        self.stopped_progress_bar.setMinimumWidth(80)
+        self.stopped_progress_bar.setMaximumWidth(140)
+        self.stopped_progress_bar.setRange(0, 100)
+        self.stopped_progress_bar.setValue(0)
+        self.stopped_progress_bar.setTextVisible(False)
+        self.stopped_progress_bar.setStyleSheet(
+            "QProgressBar { background-color: #2a2a2a; border: none; border-radius: 3px; }"
+            "QProgressBar::chunk { background-color: #64748b; border-radius: 3px; }"
+        )
+
+        self.stopped_pct_label = QLabel("0%", self.stopped_container)
+        self.stopped_pct_label.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; min-width: 24px;"
+        )
+
+        stopped_layout.addWidget(self.stopped_chzzk_badge)
+        stopped_layout.addWidget(self.stopped_retry_btn)
+        stopped_layout.addWidget(self.stopped_complete_btn)
+        stopped_layout.addWidget(self.stopped_progress_bar)
+        stopped_layout.addWidget(self.stopped_pct_label)
+        self.stopped_container.hide()
+
         # 하위 호환용 별칭
         self.downloading_container = self.vod_downloading_container
 
@@ -686,6 +794,7 @@ class TaskCardWidget(QFrame):
         action_layout.addWidget(self.vod_downloading_container)
         action_layout.addWidget(self.live_recording_container)
         action_layout.addWidget(self.completed_container)
+        action_layout.addWidget(self.stopped_container)
 
         bottom_row.addWidget(self.action_container)
         bottom_row.addStretch()
@@ -802,6 +911,9 @@ class TaskCardWidget(QFrame):
             else:
                 self.action_delete_file_btn.hide()
 
+            # 재시도(🔄) 버튼은 4번 위치에만 단일 배치하므로 2번 위치 호버 툴바에서는 항상 숨김
+            self.retry_btn.hide()
+
             # 폴더 열기(📁)와 목록에서 제거(✕)는 호버 시 상시 노출
             self.open_folder_btn.show()
             self.delete_btn.show()
@@ -816,6 +928,7 @@ class TaskCardWidget(QFrame):
         else:
             self.open_folder_btn.hide()
             self.play_btn.hide()
+            self.retry_btn.hide()
             self.action_delete_file_btn.hide()
             self.delete_btn.hide()
 
@@ -826,6 +939,100 @@ class TaskCardWidget(QFrame):
     def leaveEvent(self, event: QEvent | None) -> None:  # noqa: N802
         super().leaveEvent(event)
         self._show_hover_toolbar(False)
+
+    def contextMenuEvent(  # noqa: N802
+        self, event: QContextMenuEvent | None
+    ) -> None:
+        """우클릭 컨텍스트 메뉴: 다시 시작, 완료, 오류 상세, URL 복사 액션 지원."""
+        if event is None:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background-color: #1e1e1e; color: #f3f4f6; border: 1px solid #374151; padding: 4px; border-radius: 4px; }"
+            "QMenu::item { padding: 6px 20px; border-radius: 2px; font-size: 12px; }"
+            "QMenu::item:selected { background-color: #374151; color: white; }"
+            "QMenu::item:disabled { color: #6b7280; }"
+        )
+
+        # 1. 다시 시작
+        retry_action = QAction("다시 시작", menu)
+        is_retryable = self.status in (
+            TaskStatus.STOPPED,
+            TaskStatus.FAILED_DOWNLOAD,
+        )
+        retry_action.setEnabled(is_retryable)
+        retry_action.triggered.connect(self._on_retry_clicked)
+        menu.addAction(retry_action)
+
+        # 2. 완료
+        complete_action = QAction("완료", menu)
+        can_complete = (
+            self.status
+            in (
+                TaskStatus.STOPPED,
+                TaskStatus.FAILED_DOWNLOAD,
+                TaskStatus.FAILED_LOGIN_REQUIRED,
+            )
+            and self.has_local_media_file
+        )
+        complete_action.setEnabled(can_complete)
+        complete_action.triggered.connect(self._on_complete_clicked)
+        menu.addAction(complete_action)
+
+        menu.addSeparator()
+
+        # 3. 오류 상세 보기
+        error_action = QAction("오류 상세 보기", menu)
+        is_error = self.status in (
+            TaskStatus.FAILED_INVALID,
+            TaskStatus.FAILED_LOGIN_REQUIRED,
+            TaskStatus.FAILED_DOWNLOAD,
+        )
+        error_action.setEnabled(is_error)
+        error_action.triggered.connect(self.open_task_info_window)
+        menu.addAction(error_action)
+
+        # 4. URL 복사
+        copy_action = QAction("URL 복사", menu)
+        copy_action.triggered.connect(self._copy_url_to_clipboard)
+        menu.addAction(copy_action)
+
+        menu.exec(event.globalPos())
+
+    def copy_url_to_clipboard(self) -> None:
+        """현재 작업의 치지직 URL을 시스템 클립보드에 복사합니다 (공개 메서드)."""
+        clipboard = QApplication.clipboard()
+        if clipboard is not None and self.raw_url:
+            clipboard.setText(self.raw_url)
+
+    def trigger_retry(self) -> None:
+        """다시 시작(재시도) 시그널을 방출합니다 (공개 메서드)."""
+        self.retry_requested.emit(self.task_id)
+
+    def trigger_complete(self) -> None:
+        """현재 파일로 완료 확정 시그널을 방출합니다 (공개 메서드)."""
+        self.complete_requested.emit(self.task_id)
+
+    def _copy_url_to_clipboard(self) -> None:
+        self.copy_url_to_clipboard()
+
+    def _on_retry_clicked(self) -> None:
+        self.trigger_retry()
+
+    def _on_complete_clicked(self) -> None:
+        self.trigger_complete()
+
+    def eventFilter(  # noqa: N802
+        self, watched: QObject | None, event: QEvent | None
+    ) -> bool:
+        if event is not None and watched in (self.progress_bar, self.pct_label):
+            if event.type() == QEvent.Type.Enter:
+                tip = self.progress_bar.toolTip()
+                if tip:
+                    QToolTip.showText(QCursor.pos(), tip, self.progress_bar)
+            elif event.type() == QEvent.Type.Leave:
+                QToolTip.hideText()
+        return super().eventFilter(watched, event)
 
     def _detach_thumb_loader(self) -> None:
         """실행 중인 썸네일 로더 스레드를 안전하게 분리하여 백그라운드 종료를 대기하도록 보존합니다."""
@@ -1143,6 +1350,7 @@ class TaskCardWidget(QFrame):
         """다운로드/녹화 진행 상황을 실시간으로 갱신합니다."""
         if self.status != TaskStatus.DOWNLOADING:
             return
+        self.last_progress = progress
         self.status_label.hide()
         if hasattr(self, "downloading_metrics_widget"):
             self.downloading_metrics_widget.show()
@@ -1176,8 +1384,12 @@ class TaskCardWidget(QFrame):
             if tip_text:
                 if self.progress_bar.toolTip() != tip_text:
                     self.progress_bar.setToolTip(tip_text)
-                if hasattr(self, "pct_label") and self.pct_label.toolTip() != tip_text:
+                if self.pct_label.toolTip() != tip_text:
                     self.pct_label.setToolTip(tip_text)
+                if QToolTip.isVisible() and (
+                    self.progress_bar.underMouse() or self.pct_label.underMouse()
+                ):
+                    QToolTip.showText(QCursor.pos(), tip_text, self.progress_bar)
 
             self.elapsed_label.setText(progress.elapsed_str or "00:00")
 
@@ -1383,6 +1595,13 @@ class TaskCardWidget(QFrame):
             self.downloading_metrics_widget.hide()
             self.progress_bar.hide()
 
+        if self.stopped_container is not None:
+            self.stopped_container.hide()
+        if self.failed_retry_btn is not None:
+            self.failed_retry_btn.hide()
+        if self.failed_complete_btn is not None:
+            self.failed_complete_btn.hide()
+
         if hasattr(self, "thumb_spinner") and self.status != TaskStatus.ANALYZING:
             self.thumb_spinner.stop()
             self.thumb_spinner.hide()
@@ -1514,7 +1733,30 @@ class TaskCardWidget(QFrame):
                 self.vod_metrics_widget.hide()
             self.status_label.hide()
 
-            dur_str = format_duration(self.vod_info.duration) if self.vod_info else ""
+            if self.is_live:
+                dur_str = (
+                    self.last_progress.elapsed_str
+                    if self.last_progress and self.last_progress.elapsed_str
+                    else "00:00"
+                )
+            elif (
+                self.last_progress
+                and self.last_progress.percentage > 0
+                and self.vod_info
+                and self.vod_info.duration > 0
+            ):
+                actual_sec = int(
+                    self.vod_info.duration * (self.last_progress.percentage / 100.0)
+                )
+                dur_str = format_duration(actual_sec)
+            elif self.last_progress and self.last_progress.elapsed_str:
+                dur_str = self.last_progress.elapsed_str
+            else:
+                dur_str = (
+                    format_duration(self.vod_info.duration)
+                    if self.vod_info
+                    else "00:00"
+                )
             file_size_str = ""
             target = (
                 getattr(self, "final_file_path", None)
@@ -1534,12 +1776,19 @@ class TaskCardWidget(QFrame):
                 self.size_metric_label.setText(file_size_str or "--")
 
             self.status_label.setText(f"중지됨 ({dur_str})" if dur_str else "중지됨")
-            self.completed_container.show()
-            self.completed_chzzk_badge.show()
-            if self.is_live:
-                self.completed_live_icon_label.show()
+            self.completed_container.hide()
+            self.stopped_container.show()
+            if self.has_local_media_file:
+                self.stopped_complete_btn.show()
             else:
-                self.completed_live_icon_label.hide()
+                self.stopped_complete_btn.hide()
+            if self.last_progress:
+                pct_val = int(round(self.last_progress.percentage))
+                self.stopped_progress_bar.setValue(pct_val)
+                self.stopped_pct_label.setText(f"{pct_val}%")
+            else:
+                self.stopped_progress_bar.setValue(0)
+                self.stopped_pct_label.setText("0%")
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("중지")
 
@@ -1583,6 +1832,11 @@ class TaskCardWidget(QFrame):
             self.error_info_btn.setToolTip("작업 정보")
             self.cookie_btn.show()
             self.login_btn.show()
+            self.failed_retry_btn.hide()
+            if self.has_local_media_file:
+                self.failed_complete_btn.show()
+            else:
+                self.failed_complete_btn.hide()
             self.ready_container.hide()
             self.vod_downloading_container.hide()
             self.live_recording_container.hide()
@@ -1601,6 +1855,8 @@ class TaskCardWidget(QFrame):
             self.error_info_btn.setToolTip("작업 정보")
             self.cookie_btn.hide()
             self.login_btn.hide()
+            self.failed_retry_btn.hide()
+            self.failed_complete_btn.hide()
             self.ready_container.hide()
             self.vod_downloading_container.hide()
             self.live_recording_container.hide()
@@ -1619,6 +1875,11 @@ class TaskCardWidget(QFrame):
             self.error_info_btn.setToolTip("작업 정보")
             self.cookie_btn.hide()
             self.login_btn.hide()
+            self.failed_retry_btn.show()
+            if self.has_local_media_file:
+                self.failed_complete_btn.show()
+            else:
+                self.failed_complete_btn.hide()
             self.ready_container.hide()
             self.vod_downloading_container.hide()
             self.live_recording_container.hide()
@@ -1668,6 +1929,29 @@ class TaskCardWidget(QFrame):
             )
             self.thumb_label.setStyleSheet(
                 "background-color: rgba(245, 158, 11, 0.2); color: #f59e0b; border-radius: 4px; font-weight: bold; font-size: 12px;"
+            )
+        elif self.status == TaskStatus.STOPPED:
+            # 슬레이트 블루/그레이 좌측 5px 바 + 은은한 틴트 배경 (중지됨 상태 식별)
+            self.setStyleSheet(
+                "#TaskCardWidget {"
+                "  background-color: rgba(100, 116, 139, 0.08);"
+                "  border: 1px solid rgba(100, 116, 139, 0.35);"
+                "  border-left: 5px solid #64748b;"
+                "  border-radius: 6px;"
+                "}"
+                "#TaskCardWidget:hover {"
+                "  border: 1px solid #64748b;"
+                "  background-color: rgba(100, 116, 139, 0.12);"
+                "}"
+            )
+            self.title_label.setStyleSheet(
+                "color: #94a3b8; font-size: 13px; font-weight: 600;"
+            )
+            self.status_label.setStyleSheet(
+                "color: #94a3b8; font-size: 11px; font-weight: 500;"
+            )
+            self.thumb_label.setStyleSheet(
+                "background-color: rgba(100, 116, 139, 0.2); color: #94a3b8; border-radius: 4px; font-weight: bold; font-size: 12px;"
             )
         else:
             # 기본 정상 카드 스타일 (읽는 중, 다운로드 중 등 현행 유지)

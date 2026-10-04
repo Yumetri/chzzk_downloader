@@ -656,7 +656,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C05] 실패 - Invalid (FAILED_INVALID) - 제목 'Invalid: {url}', 빨간색 좌측 바, [치지직 뱃지] + [🗨️! 툴팁]",
+            "[C05] 실패 - Invalid (FAILED_INVALID) - 제목 'Invalid: {url}', 빨간색 좌측 바, [치지직 뱃지] + [🗨️! 툴팁] (다시 시작 위젯 제거)",
             card_invalid,
         )
 
@@ -671,7 +671,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C06] 실패 - 로그인 필요 (FAILED_LOGIN_REQUIRED) - 빨간색 바, 2줄 URL, [치지직] + [🗨️!] + [🍪] + [N]",
+            "[C06] 실패 - 로그인 필요 (FAILED_LOGIN_REQUIRED) - 빨간색 바, 2줄 URL, [치지직] + [🗨️!] + [🍪] + [N] (다시 시작 위젯 제거)",
             card_login,
         )
 
@@ -687,7 +687,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C07] 실패 - 다운로드 오류 (FAILED_DOWNLOAD) - 제목 'Download failed: {url}', 주황색 좌측 바, [치지직] + [🗨️! 툴팁]",
+            "[C07] 실패 - 다운로드 오류 (FAILED_DOWNLOAD) - 제목 'Download failed: {url}', 주황색 좌측 바, [치지직] + [🗨️!] + [🔄 다시 시작] + [✓ 완료]",
             card_download_fail,
         )
 
@@ -705,7 +705,7 @@ class FeedbackShowcaseWindow(QMainWindow):
             card_completed_vod,
         )
 
-        # [C08-Live] COMPLETED / STOPPED (Live, 사진 2 하단 규격)
+        # [C08-Live] COMPLETED (Live, 사진 2 하단 규격)
         card_completed_live = TaskCardWidget(
             raw_url="https://chzzk.naver.com/live/ddahyoni",
             status=TaskStatus.READY,
@@ -715,8 +715,29 @@ class FeedbackShowcaseWindow(QMainWindow):
         card_completed_live.set_completed(Path(__file__).resolve())
         self._add_card_section(
             scroll_layout,
-            "[C08-Live] 라이브 녹화 완결 (완료 및 중단, 사진 2 하단) - 4번: [Z] [📺▶] 유지 / 3번: 🕒 02:20   ⬇ 파일크기 (호버 시 4대 액션 툴바)",
+            "[C08-Live] 라이브 녹화 완결 (사진 2 하단) - 4번: [Z] [📺▶] 유지 / 3번: 🕒 02:20   ⬇ 파일크기 (호버 시 4대 액션 툴바)",
             card_completed_live,
+        )
+
+        # [C09] STOPPED (다운로드 중단/취소, 티켓 #21)
+        card_stopped = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/15033444",
+            status=TaskStatus.READY,
+            vod_info=mock_downloading_vod,
+            is_live=False,
+        )
+        card_stopped.last_progress = TaskProgress(
+            task_id="15033444",
+            percentage=45.0,
+            downloaded_bytes=45_000_000,
+            total_bytes=100_000_000,
+        )
+        card_stopped.target_path = Path(__file__).resolve()
+        card_stopped.set_task_status(TaskStatus.STOPPED)
+        self._add_card_section(
+            scroll_layout,
+            "[C09] 중단/취소 (STOPPED) - 슬레이트 블루 바, 4번: [Z] [🔄 다시 시작] [✓ 완료] 멈춘 진행바 45%, 3번: 중지됨 (호버 시 4대 액션 툴바)",
+            card_stopped,
         )
 
         scroll_layout.addStretch()
@@ -753,6 +774,12 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         card.download_stopped.connect(
             lambda: self._log(f"작업 카드: [■ 다운로드 중지] 클릭됨 ({card.raw_url})")
+        )
+        card.retry_requested.connect(
+            lambda tid: self._log(f"작업 카드: [🔄 다시 시작] 클릭됨 ({tid})")
+        )
+        card.complete_requested.connect(
+            lambda tid: self._log(f"작업 카드: [✓ 완료 확정] 클릭됨 ({tid})")
         )
 
         if hasattr(card, "action_delete_file_btn"):

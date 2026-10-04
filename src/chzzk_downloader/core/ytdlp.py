@@ -1,5 +1,6 @@
 """yt-dlp 기반 VOD 메타데이터 조회 모듈."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -136,6 +137,25 @@ def _ensure_chzzk_hook() -> None:
         pass
 
 
+def _parse_live_open_date(data: Mapping[str, Any]) -> str:
+    """yt-dlp 추출 결과에서 라이브 시작일시(YYYY-MM-DD HH:MM)를 안전하게 파싱합니다."""
+    raw_live_date = data.get("live_open_date")
+    if raw_live_date and isinstance(raw_live_date, str):
+        parts = raw_live_date.strip().split()
+        if len(parts) >= 2:
+            time_hm = ":".join(parts[1].split(":")[:2])
+            return f"{parts[0]} {time_hm}".strip()
+        if len(parts) == 1:
+            return parts[0]
+
+    if data.get("was_live") or data.get("live_status") == "was_live":
+        upload_date = str(data.get("upload_date") or "")
+        if len(upload_date) == 8 and upload_date.isdigit():
+            return f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+
+    return ""
+
+
 def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInfo:
     """yt-dlp를 사용하여 VOD 메타데이터를 추출합니다.
 
@@ -214,17 +234,7 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
     thumbnail_url = str(data.get("thumbnail") or "")
     duration = int(data.get("duration") or 0)
 
-    # 라이브 시작일 (liveOpenDate 등) 추출
-    live_open_date = ""
-    raw_live_date = data.get("live_open_date")
-    if raw_live_date and isinstance(raw_live_date, str):
-        # '2024-05-06 21:00:00' -> '2024-05-06'
-        live_open_date = raw_live_date.strip().split(" ")[0]
-    elif data.get("was_live") or data.get("live_status") == "was_live":
-        # yt-dlp upload_date fallback: '20240506' -> '2024-05-06'
-        upload_date = str(data.get("upload_date") or "")
-        if len(upload_date) == 8 and upload_date.isdigit():
-            live_open_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+    live_open_date = _parse_live_open_date(data)
 
     return VodInfo(
         video_no=video_no,

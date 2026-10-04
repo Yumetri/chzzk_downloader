@@ -254,3 +254,48 @@ def test_format_speed_edge_cases():
     assert format_speed(float("inf")) == "0.0 KB/s"
     assert format_speed(1024 * 1024) == "1.0 MB/s"
     assert format_speed(1.5 * 1024 * 1024 * 1024) == "1.5 GB/s"
+
+
+def test_build_vod_download_opts_includes_network_resilience_and_nopart(tmp_path):
+    """다운로드 옵션에 nopart, 이어받기 및 네트워크 재시도 옵션이 포함되는지 검증."""
+    from chzzk_downloader.gui.workers import build_vod_download_opts
+
+    spec = TaskSpec(
+        task_id="15368883",
+        video_url="https://chzzk.naver.com/video/15368883",
+        save_path=tmp_path / "test.mp4",
+    )
+    opts = build_vod_download_opts(spec)
+    assert opts.get("nopart") is True
+    assert opts.get("continuedl") is True
+    assert opts.get("socket_timeout") == 30
+    assert opts.get("retries") == 10
+    assert opts.get("fragment_retries") == 15
+    assert opts.get("file_access_retries") == 5
+
+
+def test_cleanup_partial_files_preserves_valid_downloaded_media_on_failure(tmp_path):
+    """다운로드 실패 또는 취소 시 유효한 미디어 파일(>0B)은 보존하고 빈 파일만 정리되는지 검증."""
+    save_path = tmp_path / "[스트리머] 테스트 (15368883).mp4"
+    save_path.write_bytes(b"existing downloaded video stream data")
+    neighbor_file = tmp_path / "[스트리머] 다른영상 (99999).mp4"
+    neighbor_file.write_bytes(b"neighbor valid video data")
+    empty_trash = tmp_path / "[스트리머] 빈파일 (12345).mp4.part"
+    empty_trash.write_bytes(b"")
+
+    spec = TaskSpec(
+        "15368883", "https://chzzk.naver.com/video/15368883", save_path=save_path
+    )
+    worker = VodDownloadWorker(spec)
+    worker.created_paths.add(empty_trash)
+
+    # delete_media=False (실패/중단 시 호출)
+    worker.cleanup_partial_files(delete_media=False)
+
+    assert save_path.exists(), (
+        "다운로드 중이던 유효한 영상 파일이 삭제되지 않고 보존되어야 합니다."
+    )
+    assert neighbor_file.exists(), (
+        "이웃 영상 파일이 삭제되지 않고 온전히 유지되어야 합니다."
+    )
+    assert not empty_trash.exists(), "0바이트 빈 파일은 안전하게 정리되어야 합니다."

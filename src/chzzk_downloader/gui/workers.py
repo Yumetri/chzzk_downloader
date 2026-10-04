@@ -189,6 +189,12 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": False,
+        "nopart": True,
+        "continuedl": True,
+        "socket_timeout": 30,
+        "retries": 10,
+        "fragment_retries": 15,
+        "file_access_retries": 5,
     }
 
     if ffmpeg_bin:
@@ -287,23 +293,31 @@ class VodDownloadWorker(QThread):
             )
             self.progress_updated.emit(progress)
 
-    def _cleanup_partial_files(self) -> None:
-        """취소 또는 실패 시 워커가 직접 생성한 임시 파일만 안전하게 정리합니다."""
+    def _cleanup_partial_files(self, delete_media: bool = True) -> None:
+        """취소 또는 실패 시 생성된 파일들을 정리합니다. delete_media=False 시 유효한 미디어(> 0B)는 보존합니다."""
         target_path = Path(self.task_spec.save_path)
+        temp_ytdl = Path(str(target_path) + ".ytdl")
+        try:
+            if temp_ytdl.is_file() and delete_media:
+                temp_ytdl.unlink(missing_ok=True)
+        except OSError:
+            pass
+
         cleanup_targets = set(self.created_paths)
         cleanup_targets.add(Path(str(target_path) + ".part"))
-        cleanup_targets.add(Path(str(target_path) + ".ytdl"))
+        if delete_media:
+            cleanup_targets.add(target_path)
 
         for p in cleanup_targets:
             try:
-                if p.is_file():
+                if p.is_file() and (delete_media or p.stat().st_size == 0):
                     p.unlink(missing_ok=True)
             except OSError:
                 pass
 
-    def cleanup_partial_files(self) -> None:
+    def cleanup_partial_files(self, delete_media: bool = True) -> None:
         """취소 또는 실패 시 워커가 생성한 임시 파일들을 안전하게 정리합니다 (공개 메서드)."""
-        self._cleanup_partial_files()
+        self._cleanup_partial_files(delete_media=delete_media)
 
     def run(self) -> None:
         """yt-dlp 인스턴스를 구동하여 비디오를 다운로드합니다."""
@@ -322,7 +336,7 @@ class VodDownloadWorker(QThread):
                 ydl.download([self.task_spec.video_url])
 
             if self._is_cancelled:
-                self._cleanup_partial_files()
+                self._cleanup_partial_files(delete_media=False)
                 self.download_stopped.emit(self.task_id)
                 return
 
@@ -358,10 +372,10 @@ class VodDownloadWorker(QThread):
             self.download_finished.emit(self.task_id, str(final_path))
 
         except DownloadCancelledError:
-            self._cleanup_partial_files()
+            self._cleanup_partial_files(delete_media=False)
             self.download_stopped.emit(self.task_id)
         except Exception as e:
-            self._cleanup_partial_files()
+            self._cleanup_partial_files(delete_media=False)
             if self._is_cancelled:
                 self.download_stopped.emit(self.task_id)
             else:

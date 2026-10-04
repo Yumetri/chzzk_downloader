@@ -556,25 +556,39 @@ def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
     assert "3번" in card_c04_queued.status_label.text()
     assert card_c04_queued.thumb_label.text() == "대기"
 
-    # 7. C08 완결 상태 (STOPPED 및 COMPLETED 규격 일원화): 4번 위치 [Z] 뱃지 및 메트릭 유지
-    card_c08_stopped = TaskCardWidget(
+    # 7. C09 중단 상태 (STOPPED 전용 UI): 4번 위치 stopped_container ([Z] + [🔄] + [✓] + 진행바)
+    card_c09_stopped = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/15033444",
         status=TaskStatus.STOPPED,
         vod_info=mock_vod,
     )
-    qtbot.addWidget(card_c08_stopped)
-    card_c08_stopped.show()
-    assert card_c08_stopped.status == TaskStatus.STOPPED
-    assert card_c08_stopped.completed_container.isVisible() is True
-    assert card_c08_stopped.completed_chzzk_badge.isVisible() is True
-    assert card_c08_stopped.icon_metrics_widget.isVisible() is True
-    card_c08_stopped._show_hover_toolbar(True)
-    assert card_c08_stopped.open_folder_btn.isVisible() is True
-    assert card_c08_stopped.play_btn.isVisible() is True
-    assert card_c08_stopped.action_delete_file_btn.isVisible() is True
-    assert card_c08_stopped.delete_btn.isVisible() is True
+    qtbot.addWidget(card_c09_stopped)
+    card_c09_stopped.show()
+    assert card_c09_stopped.status == TaskStatus.STOPPED
+    assert card_c09_stopped.stopped_container.isVisible() is True
+    assert card_c09_stopped.stopped_chzzk_badge.isVisible() is True
+    assert card_c09_stopped.stopped_retry_btn.isVisible() is True
+    # 파일 부재 시 [✓ 완료 확정] 버튼은 숨겨짐
+    assert card_c09_stopped.stopped_complete_btn.isHidden() is True
+    # 유효 미디어 파일 주입 시 [✓ 완료 확정] 버튼 노출 및 툴팁 "완료 확정"
+    test_stopped_file = tmp_path / "stopped_sample.mp4"
+    test_stopped_file.write_bytes(b"sample data")
+    card_c09_stopped.target_path = test_stopped_file
+    card_c09_stopped.set_task_status(TaskStatus.READY)
+    card_c09_stopped.set_task_status(TaskStatus.STOPPED)
+    assert card_c09_stopped.stopped_complete_btn.isVisible() is True
+    assert card_c09_stopped.stopped_complete_btn.toolTip() == "완료"
+    assert card_c09_stopped.stopped_retry_btn.toolTip() == "다시 시작"
+    assert card_c09_stopped.stopped_progress_bar.isVisible() is True
+    assert card_c09_stopped.stopped_pct_label.isVisible() is True
+    card_c09_stopped._show_hover_toolbar(True)
+    assert card_c09_stopped.open_folder_btn.isVisible() is True
+    assert card_c09_stopped.play_btn.isVisible() is True
+    assert card_c09_stopped.retry_btn.isHidden() is True
+    assert card_c09_stopped.action_delete_file_btn.isVisible() is True
+    assert card_c09_stopped.delete_btn.isVisible() is True
 
-    # 8. C05 분석 실패 (FAILED_INVALID): Invalid: {url} 문구 및 3번 숨김
+    # 8. C05 분석 실패 (FAILED_INVALID): Invalid: {url} 문구, 3번 숨김, 4번 재시도 위젯 숨김
     card_c05 = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/invalid_vod",
         status=TaskStatus.FAILED_INVALID,
@@ -586,8 +600,9 @@ def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
         == "Invalid: https://chzzk.naver.com/video/invalid_vod"
     )
     assert card_c05.status_label.isHidden() is True
+    assert card_c05.failed_retry_btn.isHidden() is True
 
-    # 9. C07 다운로드 실패 (FAILED_DOWNLOAD): Download failed: {url} 문구 및 3번 숨김
+    # 9. C07 다운로드 실패 (FAILED_DOWNLOAD): Download failed: {url} 문구, 3번 숨김, 4번에만 다시 시작 위젯 노출
     card_c07 = TaskCardWidget(
         raw_url="https://chzzk.naver.com/video/failed_vod",
         status=TaskStatus.FAILED_DOWNLOAD,
@@ -600,3 +615,5 @@ def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
         == "Download failed: https://chzzk.naver.com/video/failed_vod"
     )
     assert card_c07.status_label.isHidden() is True
+    assert card_c07.failed_retry_btn.isVisible() is True
+    assert card_c07.failed_retry_btn.toolTip() == "다시 시작"
