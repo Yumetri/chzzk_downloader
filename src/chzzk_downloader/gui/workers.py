@@ -1,5 +1,6 @@
 import glob
 import math
+import os
 import time
 import traceback
 from pathlib import Path
@@ -174,12 +175,7 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
         "format": format_str,
         "outtmpl": {"default": str(save_dir / f"{escaped_stem}.%(ext)s")},
         "remuxvideo": ext,
-        "postprocessors": [
-            {
-                "key": "FFmpegVideoRemuxer",
-                "preferedformat": ext,
-            }
-        ],
+        "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": ext}],
         "http_headers": {
             "Referer": "https://chzzk.naver.com/",
             "User-Agent": DEFAULT_USER_AGENT,
@@ -199,6 +195,10 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
 
     if ffmpeg_bin:
         opts["ffmpeg_location"] = str(ffmpeg_bin)
+        ffmpeg_dir = str(ffmpeg_bin.parent)
+        current_path = os.environ.get("PATH", "")
+        if ffmpeg_dir not in current_path.split(os.pathsep):
+            os.environ["PATH"] = f"{ffmpeg_dir}{os.pathsep}{current_path}"
 
     from chzzk_downloader.core.cookie_manager import (
         get_cookie_file_path,

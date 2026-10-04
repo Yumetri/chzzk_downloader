@@ -468,3 +468,82 @@ class TestSectionEdgeCases:
         )
         name = generate_vod_filename(info, section_start=10.0, section_end=None)
         assert "[00_00_10-00_00_00]" not in name
+
+    def test_build_vod_download_opts_injects_ffmpeg_to_os_environ_path(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """yt-dlp의 FFmpegFD가 시스템 PATH에서만 ffmpeg를 탐색하므로, build_vod_download_opts 시 os.environ['PATH']에 ffmpeg 디렉터리가 주입되어야 한다."""
+        import os
+        import sys
+
+        fake_bin_dir = tmp_path / "custom_bin"
+        fake_bin_dir.mkdir()
+        fake_ffmpeg = fake_bin_dir / (
+            "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+        )
+        fake_ffmpeg.touch()
+
+        # 격리된 PATH 설정 (fake_bin_dir 미포함)
+        monkeypatch.setenv("PATH", str(tmp_path / "dummy"))
+        monkeypatch.setattr(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_path",
+            lambda: fake_ffmpeg,
+        )
+
+        spec = TaskSpec(
+            task_id="test_task",
+            video_url="https://chzzk.naver.com/video/12345",
+            is_live=False,
+            title="테스트",
+            streamer="스트리머",
+            selected_quality="1080p",
+            selected_ext=".mp4",
+            save_path=tmp_path / "video.mp4",
+            section_start=10.0,
+            section_end=20.0,
+        )
+
+        build_vod_download_opts(spec)
+
+        # os.environ["PATH"]에 fake_bin_dir이 추가되었는지 검증
+        current_paths = os.environ.get("PATH", "").split(os.pathsep)
+        assert str(fake_bin_dir) in current_paths
+
+    def test_build_vod_download_opts_no_duplicate_path_injection(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """이미 PATH에 ffmpeg 디렉터리가 존재하는 경우 중복 주입하지 않는지 검증."""
+        import os
+        import sys
+
+        fake_bin_dir = tmp_path / "custom_bin"
+        fake_bin_dir.mkdir()
+        fake_ffmpeg = fake_bin_dir / (
+            "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+        )
+        fake_ffmpeg.touch()
+
+        # 이미 PATH에 포함된 상태
+        monkeypatch.setenv("PATH", f"{fake_bin_dir}{os.pathsep}{tmp_path / 'dummy'}")
+        monkeypatch.setattr(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_path",
+            lambda: fake_ffmpeg,
+        )
+
+        spec = TaskSpec(
+            task_id="test_task_dup",
+            video_url="https://chzzk.naver.com/video/12345",
+            is_live=False,
+            title="테스트",
+            streamer="스트리머",
+            selected_quality="1080p",
+            selected_ext=".mp4",
+            save_path=tmp_path / "video.mp4",
+            section_start=10.0,
+            section_end=20.0,
+        )
+
+        build_vod_download_opts(spec)
+
+        current_paths = os.environ.get("PATH", "").split(os.pathsep)
+        assert current_paths.count(str(fake_bin_dir)) == 1
