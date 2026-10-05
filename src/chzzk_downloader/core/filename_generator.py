@@ -40,6 +40,42 @@ def sanitize_filename(name: str) -> str:
 MAX_STEM_LENGTH = 200
 
 
+def adjust_live_open_date(live_open_date: str, offset_seconds: float | None) -> str:
+    """라이브 시작일시에 구간 시작 시간(offset_seconds)을 가산하여 보정된 일시를 반환합니다.
+
+    Args:
+        live_open_date: 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM', 'YYYY-MM-DD' 형식의 문자열
+        offset_seconds: 가산할 초 단위 실수/정수 (0.0 이하이거나 None이면 원본 반환)
+    """
+    if not live_open_date or not offset_seconds or offset_seconds <= 0:
+        return live_open_date
+
+    from datetime import datetime, timedelta
+
+    cleaned = live_open_date.strip()
+    dt: datetime | None = None
+    has_seconds = False
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(cleaned, fmt)
+            has_seconds = fmt == "%Y-%m-%d %H:%M:%S"
+            break
+        except ValueError:
+            pass
+
+    if dt is None:
+        return live_open_date
+
+    offset_delta = timedelta(seconds=int(round(offset_seconds)))
+    new_dt = dt + offset_delta
+
+    add_sec = int(round(offset_seconds)) % 60 != 0
+    if has_seconds or add_sec:
+        return new_dt.strftime("%Y-%m-%d %H:%M:%S")
+    return new_dt.strftime("%Y-%m-%d %H:%M")
+
+
 def _build_prefix_and_suffix(
     vod_info: VodInfo,
     section_start: float | None = None,
@@ -54,7 +90,8 @@ def _build_prefix_and_suffix(
 
     sanitized_date = ""
     if vod_info.live_open_date:
-        sanitized_date = sanitize_filename(vod_info.live_open_date)
+        effective_date = adjust_live_open_date(vod_info.live_open_date, section_start)
+        sanitized_date = sanitize_filename(effective_date)
         prefix = f"[{sanitized_streamer}] {sanitized_date} "
     else:
         prefix = f"[{sanitized_streamer}] "

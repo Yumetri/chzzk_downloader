@@ -170,6 +170,22 @@ class SectionPopup(QFrame):
         )
         return start_val, end_val
 
+    def set_section_range(self, start: float | None, end: float | None) -> None:
+        """외부에서 구간 (시작_초, 종료_초)을 프로그래밍 방식으로 설정합니다."""
+        if start is not None:
+            self.start_check.setChecked(True)
+            self.start_edit.setText(format_timestamp(start, use_fraction=True))
+        else:
+            self.start_check.setChecked(False)
+
+        if end is not None:
+            self.end_check.setChecked(True)
+            self.end_edit.setText(format_timestamp(end, use_fraction=True))
+        else:
+            self.end_check.setChecked(False)
+
+        self._validate_inputs()
+
     def reset(self) -> None:
         """구간 설정을 기본 상태(미체크, 기본 시간)로 초기화합니다."""
         self.start_check.setChecked(False)

@@ -1201,8 +1201,22 @@ class TaskCardWidget(QFrame):
             self.section_popup.show_below(self.section_btn)
 
     def _on_section_validity_changed(self, is_valid: bool) -> None:
-        """구간 설정 유효성에 따라 다운로드 시작 버튼 활성화 상태를 연동합니다."""
+        """구간 설정 유효성에 따라 다운로드 시작 버튼 활성화 상태 및 3번 위치 영상 길이를 연동합니다."""
         self.start_btn.setEnabled(is_valid)
+        if self.status == TaskStatus.READY:
+            self._update_display()
+
+    def _get_effective_duration(self) -> int:
+        """구간 설정이 적용되어 있으면 유효 구간 길이를, 아니면 원본 전체 길이를 반환합니다."""
+        if not self.vod_info:
+            return 0
+        total_dur = float(self.vod_info.duration)
+        s_start, s_end = self.section_popup.get_section_range()
+        if s_start is not None or s_end is not None:
+            start_sec = s_start if s_start is not None else 0.0
+            end_sec = s_end if s_end is not None else total_dur
+            return max(0, int(round(end_sec - start_sec)))
+        return int(round(total_dur))
 
     def _prompt_duplicate_resolution(self, filename: str) -> str:
         """동일 파일명 존재 시 처리 방법('overwrite', 'rename', 'cancel')을 묻는 대화상자를 띄웁니다."""
@@ -1285,7 +1299,11 @@ class TaskCardWidget(QFrame):
             self.final_file_path = Path(final_file_path)
         else:
             self.final_file_path = None
-        self.set_task_status(TaskStatus.COMPLETED)
+        if self.status != TaskStatus.COMPLETED:
+            self.set_task_status(TaskStatus.COMPLETED)
+        else:
+            self._update_display()
+            self._apply_style()
         if self.underMouse():
             self._show_hover_toolbar(True)
 
@@ -1675,7 +1693,8 @@ class TaskCardWidget(QFrame):
             self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
-                dur_str = format_duration(self.vod_info.duration)
+                dur = self._get_effective_duration()
+                dur_str = format_duration(dur)
                 quality_str = self.selected_quality or self.quality_combo.currentText()
                 self.status_label.setText(
                     f"{quality_str} | {dur_str}" if quality_str else dur_str
@@ -1715,7 +1734,8 @@ class TaskCardWidget(QFrame):
                 self.vod_metrics_widget.hide()
             self.status_label.hide()
 
-            dur_str = format_duration(self.vod_info.duration) if self.vod_info else ""
+            dur = self._get_effective_duration()
+            dur_str = format_duration(dur) if dur > 0 else ""
             file_size_str = ""
             target = (
                 getattr(self, "final_file_path", None)
@@ -1800,11 +1820,9 @@ class TaskCardWidget(QFrame):
             elif self.last_progress and self.last_progress.elapsed_str:
                 dur_str = self.last_progress.elapsed_str
             else:
-                dur_str = (
-                    format_duration(self.vod_info.duration)
-                    if self.vod_info
-                    else "00:00"
-                )
+                dur = self._get_effective_duration()
+                dur_str = format_duration(dur) if dur > 0 else "00:00"
+
             file_size_str = ""
             target = (
                 getattr(self, "final_file_path", None)

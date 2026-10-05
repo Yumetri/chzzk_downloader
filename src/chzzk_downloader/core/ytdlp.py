@@ -107,14 +107,32 @@ def _ensure_chzzk_hook() -> None:
                 self._chzzk_in_key = res["content"].get("inKey")
             return res
 
+        from yt_dlp.utils import ExtractorError
+
         def _hooked_real_extract(self: Any, url: str) -> Any:
-            self._chzzk_live_open_date = None
-            self._chzzk_in_key = None
-            info = orig_real_extract(self, url)
-            if self._chzzk_live_open_date:
-                info["live_open_date"] = self._chzzk_live_open_date
-            info["in_key"] = self._chzzk_in_key
-            return info
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    self._chzzk_live_open_date = None
+                    self._chzzk_in_key = None
+                    info = orig_real_extract(self, url)
+                    if self._chzzk_live_open_date:
+                        info["live_open_date"] = self._chzzk_live_open_date
+                    info["in_key"] = self._chzzk_in_key
+                    return info
+                except (ExtractorError, DownloadError, OSError) as exc:
+                    exc_str = str(exc).lower()
+                    if (
+                        "404" in exc_str
+                        or "not found" in exc_str
+                        or "login" in exc_str
+                        or "존재하지" in exc_str
+                        or attempt == max_attempts - 1
+                    ):
+                        raise
+                    import threading
+
+                    threading.Event().wait(0.5 * (attempt + 1))
 
         CHZZKVideoIE._download_json = _hooked_download_json
         CHZZKVideoIE._real_extract = _hooked_real_extract
@@ -139,7 +157,36 @@ def _ensure_chzzk_hook() -> None:
         InfoExtractor._parse_mpd_periods = _hooked_parse_mpd_periods
 
         _chzzk_hook_installed = True
-    except Exception:
+    except (ImportError, AttributeError):
+        pass
+
+
+def prepare_ytdlp_ffmpeg() -> None:
+    """yt-dlp 실행 전 FFmpeg 바이너리 환경 및 호환성 훅을 완벽히 준비합니다.
+
+    1. 시스템 내 가용한 FFmpeg 바이너리 디렉터리를 os.environ['PATH']에 최우선 순위로 주입합니다.
+    2. yt-dlp의 FFmpegPostProcessor._version_cache를 무효화하여
+       이전 미설치 판정('ffmpeg': False)으로 인한 구간 다운로드 오류를 방지합니다.
+    3. 치지직 DASH MPD 호환 훅(_ensure_chzzk_hook)을 함께 보장합니다.
+    """
+    import os
+
+    from chzzk_downloader.core.ffmpeg_manager import get_ffmpeg_path
+
+    _ensure_chzzk_hook()
+
+    ffmpeg_bin = get_ffmpeg_path()
+    if ffmpeg_bin:
+        ffmpeg_dir = str(ffmpeg_bin.parent)
+        current_path = os.environ.get("PATH", "")
+        if ffmpeg_dir not in current_path.split(os.pathsep):
+            os.environ["PATH"] = f"{ffmpeg_dir}{os.pathsep}{current_path}"
+
+    try:
+        from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+
+        FFmpegPostProcessor._version_cache.clear()
+    except (ImportError, AttributeError):
         pass
 
 
@@ -199,7 +246,7 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
         VodNotFoundError: 영상이 존재하지 않거나 삭제/비공개인 경우
         YtDlpError: 네트워크 오류 또는 yt-dlp 처리 오류 발생 시
     """
-    _ensure_chzzk_hook()
+    prepare_ytdlp_ffmpeg()
 
     opts: dict[str, Any] = {
         "skip_download": True,

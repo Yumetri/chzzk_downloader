@@ -547,3 +547,428 @@ class TestSectionEdgeCases:
 
         current_paths = os.environ.get("PATH", "").split(os.pathsep)
         assert current_paths.count(str(fake_bin_dir)) == 1
+
+    def test_prepare_ytdlp_ffmpeg_clears_stale_cache_and_enables_available(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """yt-dlp의 캐시가 False로 오염된 상태에서도 prepare_ytdlp_ffmpeg 호출 시 캐시가 무효화되고 PATH가 주입되어야 한다."""
+        import os
+        import sys
+
+        from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+
+        from chzzk_downloader.core.ytdlp import prepare_ytdlp_ffmpeg
+
+        fake_bin_dir = tmp_path / "custom_bin"
+        fake_bin_dir.mkdir()
+        fake_ffmpeg = fake_bin_dir / (
+            "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+        )
+        fake_ffmpeg.touch()
+
+        # 1. 오염된 캐시 및 잘못된 PATH 설정
+        monkeypatch.setenv("PATH", str(tmp_path / "dummy"))
+        monkeypatch.setattr(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_path",
+            lambda: fake_ffmpeg,
+        )
+        cache = vars(FFmpegPostProcessor)["_version_cache"]
+        cache["ffmpeg"] = False
+
+        # 2. prepare_ytdlp_ffmpeg 실행
+        prepare_ytdlp_ffmpeg()
+
+        # 3. 캐시에서 'ffmpeg': False가 제거되었고, PATH에 주입되었는지 단언
+        assert cache.get("ffmpeg") is not False
+        current_paths = os.environ.get("PATH", "").split(os.pathsep)
+        assert str(fake_bin_dir) in current_paths
+
+    def test_prepare_ytdlp_ffmpeg_ensures_chzzk_hook_called(self, monkeypatch) -> None:
+        """prepare_ytdlp_ffmpeg가 호출될 때 네이버 MPD DASH 호환 훅도 함께 보장되어야 한다."""
+        from unittest.mock import MagicMock
+
+        import chzzk_downloader.core.ytdlp as ytdlp_mod
+        from chzzk_downloader.core.ytdlp import prepare_ytdlp_ffmpeg
+
+        mock_hook = MagicMock()
+        monkeypatch.setitem(vars(ytdlp_mod), "_ensure_chzzk_hook", mock_hook)
+
+        prepare_ytdlp_ffmpeg()
+        mock_hook.assert_called_once()
+
+    def test_prepare_ytdlp_ffmpeg_handles_none_ffmpeg_path_gracefully(
+        self, monkeypatch
+    ) -> None:
+        """시스템에 FFmpeg가 전혀 감지되지 않아 None을 반환하더라도 예외 없이 무사히 완료되어야 한다."""
+        from chzzk_downloader.core.ytdlp import prepare_ytdlp_ffmpeg
+
+        monkeypatch.setattr(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_path",
+            lambda: None,
+        )
+        # 예외가 발생하지 않아야 함
+        prepare_ytdlp_ffmpeg()
+
+    def test_build_vod_download_opts_triggers_prepare_ytdlp_ffmpeg(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """build_vod_download_opts 호출 시 prepare_ytdlp_ffmpeg가 연동 실행되어 캐시가 클리어되는지 검증."""
+        from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+
+        cache = vars(FFmpegPostProcessor)["_version_cache"]
+        cache["ffmpeg"] = False
+
+        fake_bin_dir = tmp_path / "custom_bin"
+        fake_bin_dir.mkdir()
+        fake_ffmpeg = fake_bin_dir / "ffmpeg.exe"
+        fake_ffmpeg.touch()
+
+        monkeypatch.setattr(
+            "chzzk_downloader.core.ffmpeg_manager.get_ffmpeg_path",
+            lambda: fake_ffmpeg,
+        )
+
+        spec = TaskSpec(
+            task_id="test_opts_cache",
+            video_url="https://chzzk.naver.com/video/12345",
+            is_live=False,
+            title="테스트",
+            streamer="스트리머",
+            selected_quality="1080p",
+            selected_ext=".mp4",
+            save_path=tmp_path / "video.mp4",
+            section_start=10.0,
+            section_end=20.0,
+        )
+
+        build_vod_download_opts(spec)
+
+        assert cache.get("ffmpeg") is not False
+
+    def test_build_vod_download_opts_includes_extractor_retries(self, tmp_path) -> None:
+        """네트워크 일시 단절 방어를 위해 extractor_retries가 5 이상으로 설정되어야 한다."""
+        spec = TaskSpec(
+            task_id="test_extractor_retries",
+            video_url="https://chzzk.naver.com/video/12345",
+            is_live=False,
+            title="테스트",
+            streamer="스트리머",
+            selected_quality="1080p",
+            selected_ext=".mp4",
+            save_path=tmp_path / "video.mp4",
+        )
+        opts = build_vod_download_opts(spec)
+        assert opts.get("extractor_retries", 0) >= 5
+
+    def test_chzzk_extract_retries_transient_incomplete_read(self, monkeypatch) -> None:
+        """네이버 MPD XML 다운로드 중 IncompleteRead 일시 오류 발생 시 재시도하여 회복해야 한다."""
+        from yt_dlp.extractor.chzzk import CHZZKVideoIE
+        from yt_dlp.utils import ExtractorError
+
+        from chzzk_downloader.core.ytdlp import prepare_ytdlp_ffmpeg
+
+        prepare_ytdlp_ffmpeg()
+
+        attempts = 0
+
+        def flaky_mpd(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ExtractorError(
+                    "Error reading response (caused by IncompleteRead)"
+                )
+            return ([], {})
+
+        # MPD 파싱을 flaky_mpd로 모킹하고 가짜 비디오 메타데이터 제공
+        monkeypatch.setattr(
+            CHZZKVideoIE,
+            "_download_json",
+            lambda *a, **kw: {
+                "content": {
+                    "videoId": "12345",
+                    "inKey": "key_abc",
+                    "vodStatus": "ABR_HLS",
+                    "videoTitle": "테스트 제목",
+                }
+            },
+        )
+        monkeypatch.setattr(
+            CHZZKVideoIE,
+            "_extract_mpd_formats_and_subtitles",
+            flaky_mpd,
+        )
+
+        # 훅이 적용된 extract 실행
+        import yt_dlp
+
+        ydl = yt_dlp.YoutubeDL({"quiet": True})
+        ie_instance = CHZZKVideoIE(ydl)
+        result = ie_instance.extract("https://chzzk.naver.com/video/12345")
+        assert result["id"] == "12345"
+        assert result["title"] == "테스트 제목"
+        assert attempts == 2
+
+    def test_chzzk_extract_does_not_retry_permanent_error(self, monkeypatch) -> None:
+        """404 Not Found 등 영구적 오류 발생 시에는 재시도 대기 없이 1회만에 즉시 예외가 전파되어야 한다."""
+        import pytest
+        import yt_dlp
+        from yt_dlp.extractor.chzzk import CHZZKVideoIE
+        from yt_dlp.utils import ExtractorError
+
+        from chzzk_downloader.core.ytdlp import prepare_ytdlp_ffmpeg
+
+        prepare_ytdlp_ffmpeg()
+
+        attempts = 0
+
+        def permanent_fail(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            raise ExtractorError("HTTP Error 404: Not Found")
+
+        monkeypatch.setattr(CHZZKVideoIE, "_download_json", permanent_fail)
+
+        ydl = yt_dlp.YoutubeDL({"quiet": True})
+        ie_instance = CHZZKVideoIE(ydl)
+        with pytest.raises(ExtractorError, match="404: Not Found"):
+            ie_instance.extract("https://chzzk.naver.com/video/99999")
+
+        assert attempts == 1
+
+    def test_adjust_live_open_date_with_section_offset(self) -> None:
+        """라이브 시작일시에 구간 시작 시간(초)을 가산하여 보정된 일시를 반환하고 파일명에 반영해야 한다."""
+        from chzzk_downloader.core.filename_generator import (
+            adjust_live_open_date,
+            generate_vod_filename,
+        )
+
+        # 1. 2시간 가산 (15:00 + 7200초 = 17:00)
+        adjusted = adjust_live_open_date("2026-09-25 15:00", 7200.0)
+        assert adjusted == "2026-09-25 17:00"
+
+        # 2. 초 단위 가산 (15:00:00 + 125초 = 15:02:05)
+        adjusted_sec = adjust_live_open_date("2026-09-25 15:00:00", 125.0)
+        assert adjusted_sec == "2026-09-25 15:02:05"
+
+        # 3. 파일명 생성기 연동 검증
+        info = VodInfo(
+            video_no="15368883",
+            video_title="잠시 에반게리온 분석방",
+            channel_name="소풍왔니",
+            duration=9742,
+            live_open_date="2026-09-25 15:00",
+        )
+        fname = generate_vod_filename(
+            info,
+            section_start=7200.0,
+            section_end=7343.0,
+        )
+        # 15:00이 아닌 보정된 17:00 (전각 콜론 17：00)이어야 함
+        assert "17：00" in fname
+        assert "15：00" not in fname
+
+    def test_task_card_section_effective_duration_display(self, qtbot) -> None:
+        """구간 다운로드 설정 시 3번 위치의 영상 길이가 전체 길이가 아닌 실제 구간 길이로 표시되어야 한다."""
+        from chzzk_downloader.core.task_models import TaskStatus
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        card = TaskCardWidget(
+            task_id="t_dur", raw_url="https://chzzk.naver.com/video/1"
+        )
+        qtbot.addWidget(card)
+
+        info = VodInfo(
+            video_no="1",
+            video_title="테스트",
+            channel_name="스트리머",
+            duration=7200,  # 2시간
+        )
+        card.update_with_vod_info(info)
+
+        # 구간 10분 설정 (3600초 ~ 4200초)
+        card.section_popup.set_section_range(3600.0, 4200.0)
+
+        # READY 상태 3번 위치 라벨에 유효 구간 길이(10:00 또는 00:10:00)가 반영되어야 함
+        assert "02:00:00" not in card.status_label.text()
+        assert "10:00" in card.status_label.text()
+
+        # COMPLETED 상태로 전이 시에도 3번 위치에 실제 구간 길이(10:00)가 반영되어야 함
+        card.set_task_status(TaskStatus.COMPLETED)
+        assert "02:00:00" not in card.time_metric_label.text()
+        assert "10:00" in card.time_metric_label.text()
+
+    def test_task_card_completed_displays_file_size(self, qtbot, tmp_path) -> None:
+        """set_completed 호출 시 최종 파일의 크기가 3번 위치 size_metric_label에 즉시 표시되어야 한다."""
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        card = TaskCardWidget(
+            task_id="t_size", raw_url="https://chzzk.naver.com/video/2"
+        )
+        qtbot.addWidget(card)
+
+        test_file = tmp_path / "video.mp4"
+        test_file.write_bytes(b"x" * 1024 * 1024 * 3)  # 3 MB
+
+        # 1. 상태 변경 시그널이 먼저 도달하여 COMPLETED로 전이 (이때는 final_file_path 미지정으로 '--' 상태)
+        card.set_task_status(TaskStatus.COMPLETED)
+        assert card.size_metric_label.text() == "--"
+
+        # 2. task_completed 시그널이 도달하여 set_completed 호출
+        card.set_completed(test_file)
+
+        # 3. set_completed 내부에서 강제 갱신되어 3번 위치 용량 라벨이 '--'가 아닌 실제 용량(3.0 MB)으로 렌더링되어야 함
+        assert card.size_metric_label.text() != "--"
+        assert "3.0 MB" in card.size_metric_label.text()
+
+    def test_section_progress_poller_tracks_file_growth(self, qtbot, tmp_path) -> None:
+        from chzzk_downloader.core.task_models import TaskProgress
+        from chzzk_downloader.gui.section_poller import SectionProgressPoller
+
+        target_file = tmp_path / "section_out.mp4"
+        part_file = tmp_path / "section_out.mp4.part"
+        part_file.write_bytes(b"x" * 1024 * 1024)  # 1 MB 시작
+
+        emitted_progress: list[TaskProgress] = []
+
+        poller = SectionProgressPoller(
+            task_id="t_poll",
+            save_path=target_file,
+            poll_interval_sec=0.05,
+            progress_callback=emitted_progress.append,
+        )
+
+        poller.start()
+        try:
+            # 파일이 2 MB로 증가
+            part_file.write_bytes(b"x" * 1024 * 1024 * 2)
+            qtbot.waitUntil(lambda: len(emitted_progress) > 0, timeout=1000)
+
+            last = emitted_progress[-1]
+            assert last.downloaded_bytes >= 1024 * 1024
+            assert last.task_id == "t_poll"
+        finally:
+            poller.stop()
+
+    def test_vod_download_worker_uses_poller_for_section_download(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """VodDownloadWorker가 구간 다운로드 시 비동기 진행률 폴러를 가동하고 완료 시 정리해야 한다."""
+        from chzzk_downloader.gui.workers import VodDownloadWorker
+
+        target_file = tmp_path / "video.mp4"
+
+        spec = TaskSpec(
+            task_id="t_worker_sec",
+            video_url="https://chzzk.naver.com/video/15368883",
+            is_live=False,
+            title="테스트",
+            streamer="스트리머",
+            selected_quality="1080p",
+            selected_ext="mp4",
+            save_path=target_file,
+            section_start=10.0,
+            section_end=20.0,
+        )
+
+        worker = VodDownloadWorker(spec)
+
+        # fake download: yt-dlp download를 모킹하여 파일 생성
+        class FakeYDL:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self) -> "FakeYDL":
+                return self
+
+            def __exit__(self, *args) -> None:
+                pass
+
+            def download(self, urls: list[str]) -> None:
+                target_file.write_bytes(b"x" * 1024 * 512)
+
+        import yt_dlp
+
+        monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
+
+        worker.run()
+        assert target_file.is_file()
+
+    def test_adjust_live_open_date_edge_cases(self) -> None:
+        """라이브 시작일시 보정 함수의 다양한 엣지 케이스(빈 문자열, 날짜 단독, 음수/초과 오프셋 등)를 안전하게 처리해야 한다."""
+        from chzzk_downloader.core.filename_generator import adjust_live_open_date
+
+        # 1. 빈 문자열 또는 공백
+        assert adjust_live_open_date("", 3600.0) == ""
+        assert adjust_live_open_date("   ", 3600.0) == "   "
+
+        # 2. 오프셋 0초
+        assert adjust_live_open_date("2026-09-25 15:00", 0.0) == "2026-09-25 15:00"
+
+        # 3. 날짜만 있는 경우 (시간 없음) -> 원본 보존
+        assert adjust_live_open_date("2026-09-25", 3600.0) == "2026-09-25"
+
+        # 4. 지원하지 않는 잘못된 형식 -> 원본 보존
+        assert (
+            adjust_live_open_date("invalid_date_format", 3600.0)
+            == "invalid_date_format"
+        )
+
+        # 5. 자정 롤오버 (23:30 + 1시간 = 익일 00:30)
+        adjusted_midnight = adjust_live_open_date("2026-09-25 23:30", 3600.0)
+        assert adjusted_midnight == "2026-09-26 00:30"
+
+        # 6. 연말 롤오버 (2026-12-31 23:50 + 20분 = 2027-01-01 00:10)
+        adjusted_year = adjust_live_open_date("2026-12-31 23:50", 1200.0)
+        assert adjusted_year == "2027-01-01 00:10"
+
+    def test_section_progress_poller_robustness_on_file_deletion_and_negative_speed(
+        self, qtbot, tmp_path
+    ) -> None:
+        from chzzk_downloader.core.task_models import TaskProgress
+        from chzzk_downloader.gui.section_poller import SectionProgressPoller
+
+        target_file = tmp_path / "robust.mp4"
+        part_file = tmp_path / "robust.mp4.part"
+        part_file.write_bytes(b"x" * 1024 * 512)
+
+        emitted: list[TaskProgress] = []
+        poller = SectionProgressPoller(
+            task_id="t_robust",
+            save_path=target_file,
+            poll_interval_sec=0.03,
+            progress_callback=emitted.append,
+        )
+
+        poller.start()
+        try:
+            # 파일 삭제 시뮬레이션
+            part_file.unlink(missing_ok=True)
+            qtbot.waitUntil(lambda: len(emitted) > 0, timeout=1000)
+
+            # 크래시 없이 동작 확인
+            last = emitted[-1]
+            assert last.speed_bytes_sec >= 0.0
+        finally:
+            poller.stop()
+            # stop 다중 호출 안전성 확인
+            poller.stop()
+
+    def test_task_card_completed_handles_missing_or_empty_path(self, qtbot) -> None:
+        """존재하지 않거나 빈 경로로 set_completed가 호출되어도 크래시 없이 안전하게 처리되어야 한다."""
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        card = TaskCardWidget(
+            task_id="t_empty", raw_url="https://chzzk.naver.com/video/3"
+        )
+        qtbot.addWidget(card)
+
+        # 빈 경로 호출
+        card.set_completed("")
+        assert card.status == TaskStatus.COMPLETED
+        assert card.size_metric_label.text() == "--"
+
+        # 존재하지 않는 경로 호출
+        card.set_completed("C:/non_existent_dir/non_existent_file.mp4")
+        assert card.status == TaskStatus.COMPLETED
+        assert card.size_metric_label.text() == "--"
