@@ -1,4 +1,5 @@
 import glob
+import logging
 import subprocess
 import time
 import traceback
@@ -21,27 +22,30 @@ from chzzk_downloader.gui.section_poller import (
     format_speed,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class _SubprocessTracker:
     """yt-dlp 실행 중 기동되는 서브프로세스를 추적 풀에 등록하는 컨텍스트 관리자."""
 
     def __init__(self, target_set: set[Any]) -> None:
         self.target_set = target_set
-        self.original_popen = subprocess.Popen
+        self.original_init = subprocess.Popen.__init__
 
     def __enter__(self) -> None:
-        original = self.original_popen
+        orig_init = self.original_init
         target = self.target_set
 
-        class TrackedPopen(original):
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                super().__init__(*args, **kwargs)
-                target.add(self)
+        def tracked_init(
+            self_proc: subprocess.Popen, *args: Any, **kwargs: Any
+        ) -> None:
+            orig_init(self_proc, *args, **kwargs)
+            target.add(self_proc)
 
-        subprocess.Popen = TrackedPopen
+        subprocess.Popen.__init__ = tracked_init  # type: ignore[method-assign]
 
     def __exit__(self, *exc_info: Any) -> None:
-        subprocess.Popen = self.original_popen
+        subprocess.Popen.__init__ = self.original_init  # type: ignore[method-assign]
 
 
 class DownloadCancelledError(Exception):
@@ -346,3 +350,45 @@ class VodDownloadWorker(QThread):
                     str(e),
                     traceback.format_exc(),
                 )
+
+
+class MediaProbeWorker(QThread):
+    """로컬 미디어 파일의 실제 재생 시간과 파일 크기를 비동기로 프로빙하는 경량 워커 (R6 준수)."""
+
+    probed = pyqtSignal(str, float, int)  # (task_id, duration_seconds, file_size_bytes)
+    failed = pyqtSignal(str, str)  # (task_id, error_message)
+
+    def __init__(self, task_id: str, file_path: Path | str, parent: Any = None) -> None:
+        super().__init__(parent)
+        self.task_id = task_id
+        self.file_path = Path(file_path)
+
+    def run(self) -> None:
+        try:
+            from chzzk_downloader.core.ffmpeg_manager import probe_media_file
+
+            meta = probe_media_file(self.file_path)
+            dur = 0.0
+            size = 0
+            if isinstance(meta, dict):
+                fmt = (
+                    meta.get("format") if isinstance(meta.get("format"), dict) else meta
+                )
+                try:
+                    dur = float(fmt.get("duration", 0.0))
+                except (ValueError, TypeError):
+                    dur = 0.0
+                try:
+                    size = int(fmt.get("size", 0))
+                except (ValueError, TypeError):
+                    size = 0
+
+            if size <= 0 and self.file_path.exists():
+                try:
+                    size = self.file_path.stat().st_size
+                except OSError:
+                    pass
+            self.probed.emit(self.task_id, dur, size)
+        except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as exc:
+            logger.debug("미디어 파일 프로빙 실패 (%s): %s", self.task_id, exc)
+            self.failed.emit(self.task_id, str(exc))

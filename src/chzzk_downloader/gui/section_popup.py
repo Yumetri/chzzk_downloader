@@ -155,20 +155,23 @@ class SectionPopup(QFrame):
             self.end_edit.setStyleSheet("")
 
     def get_section_range(self) -> tuple[float | None, float | None]:
-        """선택된 구간 (시작_초, 종료_초)을 반환합니다. 지정되지 않은 경우 None을 반환합니다."""
+        """선택된 구간 (시작_초, 종료_초)을 반환합니다. 지정되지 않거나 파싱 실패 시 None을 반환합니다."""
         start_active = self.start_check.isChecked()
         end_active = self.end_check.isChecked()
 
         if not start_active and not end_active:
             return None, None
 
-        start_val = parse_timestamp(self.start_edit.text()) if start_active else 0.0
-        end_val = (
-            parse_timestamp(self.end_edit.text())
-            if end_active
-            else (self._duration if self._duration > 0 else None)
-        )
-        return start_val, end_val
+        try:
+            start_val = parse_timestamp(self.start_edit.text()) if start_active else 0.0
+            end_val = (
+                parse_timestamp(self.end_edit.text())
+                if end_active
+                else (self._duration if self._duration > 0 else None)
+            )
+            return start_val, end_val
+        except (ValueError, TypeError):
+            return None, None
 
     def set_section_range(self, start: float | None, end: float | None) -> None:
         """외부에서 구간 (시작_초, 종료_초)을 프로그래밍 방식으로 설정합니다."""
@@ -191,10 +194,13 @@ class SectionPopup(QFrame):
         self.start_check.setChecked(False)
         self.end_check.setChecked(False)
         self.start_edit.setText("00:00:00")
+        self.start_edit.setEnabled(False)
         self.end_edit.setText(
             format_timestamp(self._duration) if self._duration > 0 else "00:00:00"
         )
+        self.end_edit.setEnabled(False)
         self._set_error("")
+        self.section_changed.emit(True)
 
     def show_below(self, target_widget: QWidget) -> None:
         """대상 위젯의 바로 아래 위치에 팝업을 표시합니다."""

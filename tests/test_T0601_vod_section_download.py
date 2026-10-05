@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1231,3 +1232,251 @@ class TestSectionEdgeCases:
         card.set_completed(str(dummy_file))
         assert card.status == TaskStatus.COMPLETED
         assert card.time_metric_label.text() == "02:00"
+
+    def test_section_popup_get_section_range_handles_incomplete_input_safely(
+        self, qtbot
+    ) -> None:
+        """사용자가 '00:' 등 불완전한 타임스탬프를 타이핑 중일 때 get_section_range가 예외 없이 안전하게 (None, None)을 반환하는지 검증."""
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        popup = SectionPopup()
+        qtbot.addWidget(popup)
+
+        # 시작 체크 후 불완전 입력
+        popup.start_check.setChecked(True)
+        popup.start_edit.setText("00:")
+        # 종료 체크 후 불완전 입력
+        popup.end_check.setChecked(True)
+        popup.end_edit.setText("::")
+
+        # 크래시 없이 (None, None) 반환 단언
+        s_start, s_end = popup.get_section_range()
+        assert s_start is None
+        assert s_end is None
+
+    def test_subprocess_tracker_captures_ytdlp_utils_popen(self) -> None:
+        """_SubprocessTracker가 yt_dlp.utils.Popen 및 external.Popen 인스턴스를 정확히 가로채 추적 풀에 등록하는지 검증."""
+        import yt_dlp.utils
+
+        from chzzk_downloader.gui.workers import _SubprocessTracker
+
+        tracked: set = set()
+        with _SubprocessTracker(tracked):
+            # yt-dlp의 실제 Popen 클래스를 사용해 더미 서브프로세스 기동
+            proc = yt_dlp.utils.Popen(["cmd.exe", "/c", "exit 0"])
+            proc.wait()
+
+        assert len(tracked) == 1
+        assert proc in tracked
+
+    def test_section_popup_reset_clears_selection_and_inputs(self, qtbot) -> None:
+        """SectionPopup.reset() 호출 시 체크박스가 해제되고 입력창이 00:00:00으로 복원되는지 검증."""
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        popup = SectionPopup()
+        qtbot.addWidget(popup)
+
+        popup.start_check.setChecked(True)
+        popup.start_edit.setText("00:10:00")
+        popup.end_check.setChecked(True)
+        popup.end_edit.setText("00:20:00")
+
+        popup.reset()
+
+        assert not popup.start_check.isChecked()
+        assert not popup.end_check.isChecked()
+        assert popup.start_edit.text() == "00:00:00"
+        assert popup.end_edit.text() == "00:00:00"
+        assert popup.get_section_range() == (None, None)
+
+    def test_task_card_hides_section_popup_when_download_starts(
+        self, qtbot, monkeypatch
+    ) -> None:
+        """다운로드 시작 트리거 시 열려있던 section_popup이 자동으로 닫히는지 검증."""
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        monkeypatch.setattr(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            lambda auto_download=False: True,
+        )
+
+        card = TaskCardWidget(raw_url="https://chzzk.naver.com/video/12345")
+        qtbot.addWidget(card)
+        card.show()
+        card.section_popup.show()
+        assert card.section_popup.isVisible() is True
+
+        card.trigger_start_download()
+        assert card.section_popup.isVisible() is False
+
+    def test_generate_vod_filename_prevents_inverted_section_range_when_duration_is_zero(
+        self,
+    ) -> None:
+        """영상 길이가 0일 때 시작 시간만 설정된 경우 종료 시간이 시작 시간보다 작아지는 파일명 역전을 방지하는지 검증."""
+        from chzzk_downloader.core.filename_generator import generate_vod_filename
+        from chzzk_downloader.core.ytdlp import VodInfo
+
+        info = VodInfo(
+            video_no="12345",
+            video_title="테스트 영상",
+            channel_name="스트리머",
+            duration=0,
+        )
+        fname = generate_vod_filename(
+            info, ext="mp4", section_start=10.0, section_end=None
+        )
+        # 역전되어 [00_00_10-00_00_00]이 되지 않고 [00_00_10-end] 접미사로 안전 처리됨
+        assert "[00_00_10-end]" in fname
+        assert "[00_00_10-00_00_00]" not in fname
+
+    def test_vod_completed_displays_section_duration_not_elapsed_time(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """구간 다운로드 완료 시 이전 중지 경과시간 잔류나 팝업 리셋과 무관하게 유효 구간 길이(05:23)가 표시되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskProgress, TaskStatus
+        from chzzk_downloader.core.ytdlp import VodInfo
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        card = TaskCardWidget(raw_url="https://chzzk.naver.com/video/12345")
+        qtbot.addWidget(card)
+
+        # 전체 10분(600초) 영상 중 5분 23초(323초) 구간 설정 (00:00:00 ~ 00:05:23)
+        info = VodInfo(
+            video_no="12345",
+            video_title="구간 테스트",
+            channel_name="스트리머",
+            duration=600,
+        )
+        card.update_with_vod_info(info)
+        card.section_popup.set_section_range(0.0, 323.0)
+
+        # 이전에 다운로드 중지되어 경과 시간 잔류 상태를 모의
+        card.set_task_status(TaskStatus.STOPPED)
+
+        # 새 다운로드 시작 트리거 (잔류 문자열이 리셋되고 적용 구간이 고정되어야 함)
+        card.trigger_start_download()
+        card.set_task_status(TaskStatus.DOWNLOADING)
+
+        # 다운로드 도중 35초 경과 progress 수신 (elapsed_seconds=35.0)
+        prog = TaskProgress(
+            task_id=card.task_id,
+            downloaded_bytes=10 * 1024 * 1024,
+            total_bytes=50 * 1024 * 1024,
+            percentage=20.0,
+            elapsed_seconds=35.0,
+        )
+        card.update_progress(prog)
+
+        # 다운로드 도중 또는 완료 시점에 팝업이 외부 동작으로 리셋되더라도 카드는 적용된 구간을 기억해야 함
+        card.section_popup.reset()
+
+        # 임의의 완료 파일 생성
+        dest_file = tmp_path / "section_test.mp4"
+        dest_file.write_bytes(b"dummy video data")
+
+        # 다운로드 완료 및 확정
+        card.set_completed(dest_file)
+        card.set_task_status(TaskStatus.COMPLETED)
+
+        # 3번 위치 라벨은 경과 시간("00:35" / "00:00:35")이나 전체 영상 길이("10:00")가 아니라 구간 길이("05:23")여야 함
+        time_text = card.time_metric_label.text().strip()
+        assert time_text != "00:35", "잔류 경과 시간 00:35가 완료 카드에 남아있음"
+        assert time_text != "00:00:35", "경과 시간 00:00:35가 완료 카드에 남아있음"
+        assert time_text != "10:00", "팝업 리셋으로 인해 원본 전체 길이가 표시됨"
+        assert time_text == "05:23", f"예상 구간 길이 05:23 대신 {time_text}가 표시됨"
+
+    def test_stopped_task_probes_actual_media_duration_and_size(
+        self, qtbot: Any, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """다운로드 정지 및 완료 확정 시 단순 추정식이 아닌 실제 미디어 프로빙 결과가 반영되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskProgress, TaskStatus
+        from chzzk_downloader.core.ytdlp import VodInfo
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        # 100초 전체 영상에서 38% 진행 후 중지 시뮬레이션
+        card = TaskCardWidget(raw_url="https://chzzk.naver.com/video/12345")
+        qtbot.addWidget(card)
+
+        info = VodInfo(
+            video_no="12345",
+            video_title="중지 테스트 영상",
+            channel_name="스트리머",
+            duration=100,
+        )
+        card.update_with_vod_info(info)
+        card.trigger_start_download()
+        card.set_task_status(TaskStatus.DOWNLOADING)
+
+        # 진행률 38% (단순 계산 시 38초 -> 00:38)
+        prog = TaskProgress(
+            task_id=card.task_id,
+            downloaded_bytes=30_500_000,
+            total_bytes=100_000_000,
+            percentage=38.0,
+            elapsed_seconds=20.0,
+        )
+        card.update_progress(prog)
+
+        # 실제 디스크 파일 (40.9 MB, 실제 재생 시간은 32초, MP4 ftyp 매직 넘버 포함)
+        test_media = tmp_path / "stopped_sample.mp4"
+        test_media.write_bytes(b"\x00\x00\x00\x20ftypisom" + b"x" * (42_912_771 - 12))
+        card.target_path = test_media
+
+        # probe_media_file 모킹: 실제 영상 길이는 32초, 크기는 42,912,771 바이트 반환
+        from chzzk_downloader.core import ffmpeg_manager
+
+        monkeypatch.setattr(
+            ffmpeg_manager,
+            "probe_media_file",
+            lambda path: {
+                "duration": 32.0,
+                "size": 42_912_771,
+                "width": 1920,
+                "height": 1080,
+            },
+        )
+
+        # STOPPED 상태로 진입
+        card.set_task_status(TaskStatus.STOPPED)
+
+        # 프로빙 워커가 비동기로 동작하여 카드 메트릭을 갱신할 때까지 대기
+        qtbot.waitUntil(
+            lambda: card.time_metric_label.text().strip() == "00:32",
+            timeout=2000,
+        )
+        assert card.time_metric_label.text().strip() == "00:32"
+        assert "40.9 MB" in card.size_metric_label.text()
+
+        # 정지 상태에서 작업 완료(✓) 확정 시에도 00:32와 40.9 MB가 유지되어야 함
+        card.set_completed(test_media)
+        card.set_task_status(TaskStatus.COMPLETED)
+        assert card.time_metric_label.text().strip() == "00:32"
+        assert "40.9 MB" in card.size_metric_label.text()
+
+        # 워커 안전 종료 정리
+        card.close()
+
+    def test_media_probe_worker_emits_probed_metadata(
+        self, qtbot: Any, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """MediaProbeWorker가 비동기 스레드에서 실제 미디어 duration과 size를 프로빙하고 시그널을 방출하는지 검증."""
+        from chzzk_downloader.core import ffmpeg_manager
+        from chzzk_downloader.gui.workers import MediaProbeWorker
+
+        fake_file = tmp_path / "probe_test.mp4"
+        fake_file.write_bytes(b"test data")
+
+        monkeypatch.setattr(
+            ffmpeg_manager,
+            "probe_media_file",
+            lambda path: {"duration": 45.5, "size": 1234567},
+        )
+
+        worker = MediaProbeWorker("task-123", fake_file)
+        with qtbot.waitSignal(worker.probed, timeout=2000) as blocker:
+            worker.start()
+
+        task_id, duration, size = blocker.args
+        assert task_id == "task-123"
+        assert duration == 45.5
+        assert size == 1234567

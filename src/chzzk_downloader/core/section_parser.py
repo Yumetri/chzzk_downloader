@@ -8,11 +8,15 @@ import math
 def _parse_part(token: str) -> float:
     """단일 시간 토큰 문자열을 양수 유한 실수로 파싱합니다."""
     trimmed = token.strip()
+    if not trimmed:
+        raise ValueError("타임스탬프가 비어있습니다.")
     if trimmed.startswith("-"):
         raise ValueError("타임스탬프는 음수일 수 없습니다.")
     val = float(trimmed)
     if math.isnan(val) or math.isinf(val):
         raise ValueError("유효하지 않은 숫자 타임스탬프입니다.")
+    if val < 0:
+        raise ValueError("타임스탬프는 음수일 수 없습니다.")
     return val
 
 
