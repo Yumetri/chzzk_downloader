@@ -89,5 +89,10 @@ def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
         opts["download_ranges"] = cast(Any, download_range_func)(
             [], [(s_start, task_spec.section_end)]
         )
+        section_ffmpeg_args = list(compat_args)
+        if "-avoid_negative_ts" not in section_ffmpeg_args:
+            section_ffmpeg_args.extend(["-avoid_negative_ts", "make_zero"])
+        opts["postprocessor_args"] = {"ffmpeg": section_ffmpeg_args}
+        opts["downloader_args"] = {"ffmpeg": section_ffmpeg_args}
 
     return opts

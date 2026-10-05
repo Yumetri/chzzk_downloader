@@ -128,10 +128,17 @@ def _delete_file_safely(file_path: Path | None) -> bool:
                 pass
 
         if not deleted:
-            try:
-                target.unlink(missing_ok=True)
-                deleted = True
-            except Exception:
+            import time
+
+            for attempt in range(3):
+                try:
+                    target.unlink(missing_ok=True)
+                    deleted = True
+                    break
+                except OSError:
+                    if attempt < 2:
+                        time.sleep(0.05)
+            if not deleted:
                 success = False
 
     return success
@@ -318,6 +325,7 @@ class TaskCardWidget(QFrame):
         self.is_deleted: bool = False
         self._has_started_download: bool = status == TaskStatus.DOWNLOADING
         self._stopped_without_file: bool = False
+        self._stopped_duration_str: str | None = None
         self._thumb_loader: ThumbnailLoaderThread | None = None
         self._info_win: Any = None
 
@@ -1263,6 +1271,31 @@ class TaskCardWidget(QFrame):
         else:
             target = save_dir
 
+        expected_bytes = 0
+        if self.vod_info:
+            dur = (
+                (s_end - s_start)
+                if (s_start is not None and s_end is not None)
+                else self.vod_info.duration
+            )
+            if dur and dur > 0:
+                tbr: float | None = None
+                for fmt in self.vod_info.formats:
+                    if fmt.format_id == quality or fmt.resolution == quality:
+                        if fmt.tbr and fmt.tbr > 0:
+                            tbr = fmt.tbr
+                            break
+                if tbr is None:
+                    if "1080" in quality:
+                        tbr = 6000.0
+                    elif "720" in quality:
+                        tbr = 3000.0
+                    elif "480" in quality:
+                        tbr = 1500.0
+                    else:
+                        tbr = 5000.0
+                expected_bytes = int(tbr * 1000 / 8 * dur)
+
         return TaskSpec(
             task_id=self.task_id,
             video_url=self.raw_url,
@@ -1274,6 +1307,7 @@ class TaskCardWidget(QFrame):
             save_path=self.target_path or target,
             section_start=s_start,
             section_end=s_end,
+            expected_total_bytes=expected_bytes,
         )
 
     def set_task_status(self, status: TaskStatus) -> None:
@@ -1483,7 +1517,10 @@ class TaskCardWidget(QFrame):
                 if hasattr(self, "ext_combo") and self.ext_combo.currentText()
                 else settings.file_extension
             )
-            filename = generate_vod_filename(self.vod_info, ext=ext)
+            s_start, s_end = self.section_popup.get_section_range()
+            filename = generate_vod_filename(
+                self.vod_info, ext=ext, section_start=s_start, section_end=s_end
+            )
             target = save_dir / filename
 
         filename_str = Path(target).name if target else "다운로드 파일"
@@ -1634,6 +1671,7 @@ class TaskCardWidget(QFrame):
         self.final_file_path = None
         self._has_started_download = False
         self._stopped_without_file = False
+        self._stopped_duration_str = None
         self.selected_quality = ""
         self.custom_download_dir = None
         self.target_path = None
@@ -1734,8 +1772,11 @@ class TaskCardWidget(QFrame):
                 self.vod_metrics_widget.hide()
             self.status_label.hide()
 
-            dur = self._get_effective_duration()
-            dur_str = format_duration(dur) if dur > 0 else ""
+            if self._stopped_duration_str:
+                dur_str = self._stopped_duration_str
+            else:
+                dur = self._get_effective_duration()
+                dur_str = format_duration(dur) if dur > 0 else ""
             file_size_str = ""
             target = (
                 getattr(self, "final_file_path", None)
@@ -1813,8 +1854,12 @@ class TaskCardWidget(QFrame):
                 and self.vod_info
                 and self.vod_info.duration > 0
             ):
+                effective_total = self._get_effective_duration()
+                base_duration = (
+                    effective_total if effective_total > 0 else self.vod_info.duration
+                )
                 actual_sec = int(
-                    self.vod_info.duration * (self.last_progress.percentage / 100.0)
+                    base_duration * (self.last_progress.percentage / 100.0)
                 )
                 dur_str = format_duration(actual_sec)
             elif self.last_progress and self.last_progress.elapsed_str:
@@ -1822,6 +1867,8 @@ class TaskCardWidget(QFrame):
             else:
                 dur = self._get_effective_duration()
                 dur_str = format_duration(dur) if dur > 0 else "00:00"
+
+            self._stopped_duration_str = dur_str
 
             file_size_str = ""
             target = (

@@ -1,4 +1,5 @@
 import glob
+import subprocess
 import time
 import traceback
 from pathlib import Path
@@ -19,6 +20,28 @@ from chzzk_downloader.gui.section_poller import (
     format_eta,
     format_speed,
 )
+
+
+class _SubprocessTracker:
+    """yt-dlp 실행 중 기동되는 서브프로세스를 추적 풀에 등록하는 컨텍스트 관리자."""
+
+    def __init__(self, target_set: set[Any]) -> None:
+        self.target_set = target_set
+        self.original_popen = subprocess.Popen
+
+    def __enter__(self) -> None:
+        original = self.original_popen
+        target = self.target_set
+
+        class TrackedPopen(original):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                target.add(self)
+
+        subprocess.Popen = TrackedPopen
+
+    def __exit__(self, *exc_info: Any) -> None:
+        subprocess.Popen = self.original_popen
 
 
 class DownloadCancelledError(Exception):
@@ -135,6 +158,7 @@ class VodDownloadWorker(QThread):
         self.task_id = task_spec.task_id
         self._is_cancelled = False
         self.created_paths: set[Path] = set()
+        self._subprocesses: set[Any] = set()
         self._last_progress_emit_time = 0.0
         self._start_time = 0.0
         self._ydl_opts: dict[str, Any] = {}
@@ -145,6 +169,15 @@ class VodDownloadWorker(QThread):
         self._is_cancelled = True
         if self._poller is not None:
             self._poller.stop()
+        for proc in list(self._subprocesses):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def register_subprocess(self, proc: Any) -> None:
+        """취소 시 함께 종료할 활성 서브프로세스를 등록합니다."""
+        self._subprocesses.add(proc)
 
     @property
     def is_cancelled(self) -> bool:
@@ -266,13 +299,15 @@ class VodDownloadWorker(QThread):
                 self._poller = SectionProgressPoller(
                     task_id=self.task_id,
                     save_path=Path(self.task_spec.save_path),
+                    estimated_total_bytes=self.task_spec.expected_total_bytes,
                     progress_callback=self.progress_updated.emit,
                 )
                 self._poller.start()
 
             try:
-                with yt_dlp.YoutubeDL(cast(Any, self._ydl_opts)) as ydl:
-                    ydl.download([self.task_spec.video_url])
+                with _SubprocessTracker(self._subprocesses):
+                    with yt_dlp.YoutubeDL(cast(Any, self._ydl_opts)) as ydl:
+                        ydl.download([self.task_spec.video_url])
             finally:
                 if self._poller is not None:
                     self._poller.stop()

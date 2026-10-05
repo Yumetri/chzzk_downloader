@@ -973,3 +973,261 @@ class TestSectionEdgeCases:
         card.set_completed("C:/non_existent_dir/non_existent_file.mp4")
         assert card.status == TaskStatus.COMPLETED
         assert card.size_metric_label.text() == "--"
+
+    def test_section_download_poller_calculates_percentage_and_eta(
+        self, tmp_path, qtbot
+    ) -> None:
+        """구간 다운로드 폴러가 estimated_total_bytes를 기반으로 0%가 아닌 유의미한 percentage와 ETA를 산출하는지 검증."""
+        from chzzk_downloader.core.task_models import TaskProgress
+        from chzzk_downloader.gui.section_poller import SectionProgressPoller
+
+        target_file = tmp_path / "section_test.mp4"
+        # 2MB 파일 생성
+        target_file.write_bytes(b"x" * 2 * 1024 * 1024)
+
+        emitted: list[TaskProgress] = []
+        # 예상 용량 10MB
+        poller = SectionProgressPoller(
+            task_id="t_pct",
+            save_path=target_file,
+            poll_interval_sec=0.03,
+            estimated_total_bytes=10 * 1024 * 1024,
+            progress_callback=emitted.append,
+        )
+        poller.start()
+        try:
+            qtbot.waitUntil(lambda: len(emitted) > 0, timeout=1000)
+            last = emitted[-1]
+            assert last.total_bytes == 10 * 1024 * 1024
+            assert last.percentage == 20.0
+            assert "20.0%" in last.detailed_percentage_str
+        finally:
+            poller.stop()
+
+    def test_section_download_cancel_kills_ffmpeg_and_preserves_media(
+        self, tmp_path, qtbot
+    ) -> None:
+        """구간 다운로드 취소 시 활성 FFmpeg 프로세스에 kill이 호출되고, 생성된 유효 미디어 파일은 보존되는지 검증."""
+        from unittest.mock import MagicMock
+
+        from chzzk_downloader.core.task_models import TaskSpec
+        from chzzk_downloader.gui.workers import VodDownloadWorker
+
+        target_file = tmp_path / "section_media.mp4"
+        # 1MB 기존 미디어 데이터 생성
+        target_file.write_bytes(b"x" * 1024 * 1024)
+
+        spec = TaskSpec(
+            task_id="t_cancel_kill",
+            video_url="https://chzzk.naver.com/video/1",
+            save_path=target_file,
+            section_start=0.0,
+            section_end=60.0,
+        )
+        worker = VodDownloadWorker(spec)
+
+        fake_proc = MagicMock()
+        fake_proc.kill = MagicMock()
+        # 가상 하위 서브프로세스 등록
+        worker.register_subprocess(fake_proc)
+
+        # 취소 실행
+        worker.cancel()
+
+        # 1. FFmpeg 프로세스에 kill이 즉시 호출되었는지 검증
+        fake_proc.kill.assert_called_once()
+
+        # 2. 유효 미디어 파일(>0B)은 디스크에 온전히 보존되어 있는지 음성 단언
+        worker.cleanup_partial_files(delete_media=False)
+        assert target_file.exists()
+        assert target_file.stat().st_size == 1024 * 1024
+
+    def test_task_spec_expected_total_bytes_calculated_from_section_and_bitrate(
+        self, tmp_path, qtbot
+    ) -> None:
+        """TaskCard에서 구간 설정과 화질이 주어졌을 때 expected_total_bytes가 TaskSpec에 올바르게 계산되어 반영되는지 검증."""
+        from chzzk_downloader.core.ytdlp import VodFormatInfo, VodInfo
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        card = TaskCardWidget(
+            task_id="t_expected_bytes",
+            raw_url="https://chzzk.naver.com/video/12345",
+        )
+        qtbot.addWidget(card)
+
+        # 10분(600초) VOD, 1080p tbr=6000 kbps 메타데이터 설정
+        card.vod_info = VodInfo(
+            video_no="12345",
+            video_title="비트레이트 테스트",
+            channel_name="스트리머",
+            duration=600,
+            formats=[VodFormatInfo(format_id="1080p", resolution="1080p", tbr=6000.0)],
+        )
+        # 구간 0초 ~ 300초 (5분 = 300초)
+        card.section_popup.set_section_range(0.0, 300.0)
+        card.quality_combo.clear()
+        card.quality_combo.addItem("1080p")
+
+        spec = card.get_task_spec()
+        # 6000 kbps = 6,000,000 bps = 750,000 B/s. 300초 = 225,000,000 B
+        expected = int(6000.0 * 1000 / 8 * 300)
+        assert spec.expected_total_bytes == expected
+
+    def test_delete_file_safely_retries_on_temporary_file_lock(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Windows 파일 핸들 릴리즈 지연으로 첫 시도에 PermissionError가 발생해도 재시도를 통해 정상 삭제되는지 검증."""
+
+        from chzzk_downloader.gui.task_card import _delete_file_safely
+
+        test_file = tmp_path / "lock_test.mp4"
+        test_file.write_bytes(b"data")
+
+        attempts = 0
+        real_unlink = Path.unlink
+
+        def mock_unlink(path_obj, missing_ok=True):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 2:
+                raise PermissionError("다른 프로세스가 파일을 사용 중입니다.")
+            real_unlink(path_obj, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", mock_unlink)
+        # Windows shell32 SHFileOperation을 건너뛰도록 mocking
+        monkeypatch.setattr("sys.platform", "linux")
+
+        ok = _delete_file_safely(test_file)
+        assert ok is True
+        assert attempts == 2
+        assert not test_file.exists()
+
+    def test_section_poller_dynamic_expansion_when_actual_exceeds_estimated(
+        self, tmp_path, qtbot
+    ) -> None:
+        """실제 파일 크기가 예상 크기보다 커져도 100%를 초과하지 않고 99% 이하로 부드럽게 동적 확장되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskProgress
+        from chzzk_downloader.gui.section_poller import SectionProgressPoller
+
+        test_file = tmp_path / "exceed.mp4"
+        # 15MB 파일 (예상 10MB 초과)
+        test_file.write_bytes(b"x" * 15 * 1024 * 1024)
+
+        emitted: list[TaskProgress] = []
+        poller = SectionProgressPoller(
+            task_id="t_exceed",
+            save_path=test_file,
+            poll_interval_sec=0.03,
+            estimated_total_bytes=10 * 1024 * 1024,
+            progress_callback=emitted.append,
+        )
+        poller.start()
+        try:
+            qtbot.waitUntil(lambda: len(emitted) > 0, timeout=1000)
+            last = emitted[-1]
+            # 동적 확장으로 total_bytes가 15MB * 1.05 이상으로 커져야 함
+            assert last.total_bytes >= 15 * 1024 * 1024
+            assert last.percentage <= 99.0
+            assert last.downloaded_bytes == 15 * 1024 * 1024
+        finally:
+            poller.stop()
+
+    def test_worker_cancel_idempotent_and_safe_with_exited_process(
+        self, tmp_path
+    ) -> None:
+        """프로세스가 이미 종료되었거나 다중 cancel 호출 시에도 크래시 없이 안전하게 멱등성을 유지하는지 검증."""
+        from unittest.mock import MagicMock
+
+        from chzzk_downloader.core.task_models import TaskSpec
+        from chzzk_downloader.gui.workers import VodDownloadWorker
+
+        spec = TaskSpec(
+            task_id="t_idempotent",
+            video_url="https://chzzk.naver.com/video/1",
+            save_path=tmp_path / "out.mp4",
+        )
+        worker = VodDownloadWorker(spec)
+
+        dead_proc = MagicMock()
+        # kill 호출 시 이미 프로세스가 종료되어 OSError 발생 모사
+        dead_proc.kill.side_effect = OSError("Process already dead")
+        worker.register_subprocess(dead_proc)
+
+        # 3회 연속 취소 호출해도 예외가 발생하지 않아야 함
+        worker.cancel()
+        worker.cancel()
+        worker.cancel()
+
+        assert worker.is_cancelled is True
+        assert dead_proc.kill.call_count == 3
+
+    def test_section_download_opts_include_avoid_negative_ts(self, tmp_path) -> None:
+        """구간 다운로드 옵션에 FFmpeg 타임스탬프 리셋(-avoid_negative_ts make_zero) 인자가 포함되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskSpec
+        from chzzk_downloader.core.ytdlp_opts import build_vod_download_opts
+
+        spec = TaskSpec(
+            task_id="t_ts_reset",
+            video_url="https://chzzk.naver.com/video/123",
+            save_path=tmp_path / "ts_test.mp4",
+            section_start=3600.0,
+            section_end=3900.0,
+        )
+        opts = build_vod_download_opts(spec)
+
+        downloader_args = opts.get("downloader_args", {}).get("ffmpeg", [])
+        postprocessor_args = opts.get("postprocessor_args", {}).get("ffmpeg", [])
+
+        assert "-avoid_negative_ts" in downloader_args
+        assert "make_zero" in downloader_args
+        assert "-avoid_negative_ts" in postprocessor_args
+        assert "make_zero" in postprocessor_args
+
+    def test_task_card_stopped_and_completed_shows_actual_partial_duration(
+        self, tmp_path, qtbot
+    ) -> None:
+        """구간 다운로드 중간 정지 시 3번 위치에 원본 전체 길이가 아닌 실제 다운로드된 구간 시간이 표시되고 완료 확정 시에도 유지되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskProgress, TaskStatus
+        from chzzk_downloader.core.ytdlp import VodFormatInfo, VodInfo
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        card = TaskCardWidget(
+            task_id="t_stopped_dur",
+            raw_url="https://chzzk.naver.com/video/999",
+        )
+        qtbot.addWidget(card)
+
+        dummy_file = tmp_path / "stopped_sample.mp4"
+        dummy_file.write_bytes(b"data" * 1000)
+
+        # 원본 길이 5시간(18000초), 1080p 메타데이터
+        card.vod_info = VodInfo(
+            video_no="999",
+            video_title="긴 방송",
+            channel_name="스트리머",
+            duration=18000,
+            formats=[VodFormatInfo(format_id="1080p", resolution="1080p", tbr=6000.0)],
+        )
+        # 구간 10분 = 600초 (0초 ~ 600초)
+        card.section_popup.set_section_range(0.0, 600.0)
+
+        card.set_task_status(TaskStatus.DOWNLOADING)
+        # 20% 다운로드 진행 통지 (600초의 20% = 120초 = 02:00)
+        progress = TaskProgress(
+            task_id="t_stopped_dur",
+            percentage=20.0,
+            downloaded_bytes=1000,
+            total_bytes=5000,
+        )
+        card.update_progress(progress)
+
+        # 1. 중간 정지 상태로 전이: 3번 위치 시간 레이블 검증
+        card.set_task_status(TaskStatus.STOPPED)
+        assert card.status == TaskStatus.STOPPED
+        # 18000초의 20%(3600초=01:00:00)가 아니라, 구간 600초의 20%(120초=02:00)가 표시되어야 함
+        assert card.time_metric_label.text() == "02:00"
+
+        # 2. 정지 상태에서 '작업 완료' 확정 호출: 목표 전체(10:00)로 덮어쓰지 않고 실제 받아진 02:00 유지 검증
+        card.set_completed(str(dummy_file))
+        assert card.status == TaskStatus.COMPLETED
+        assert card.time_metric_label.text() == "02:00"

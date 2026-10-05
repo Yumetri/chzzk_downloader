@@ -105,3 +105,4 @@ class TaskSpec:
     save_path: Path | str = ""
     section_start: float | None = None
     section_end: float | None = None
+    expected_total_bytes: int = 0

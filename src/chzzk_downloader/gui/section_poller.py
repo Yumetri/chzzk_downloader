@@ -113,6 +113,10 @@ class SectionProgressPoller:
             self._last_bytes = cur_bytes
 
             total_bytes = self.estimated_total_bytes
+            if cur_bytes >= total_bytes and cur_bytes > 0:
+                total_bytes = int(cur_bytes * 1.05)
+                self.estimated_total_bytes = total_bytes
+
             pct = 0.0
             eta = 0
             if total_bytes > 0:
