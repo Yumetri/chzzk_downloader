@@ -1,18 +1,20 @@
 ---
 name: desktop-sync
-description: Use when the user asks to sync codebase changes (src, docs, tools, skills) from the worktree to the local desktop directory (C:\Users\이홍원\Desktop\chzzk_downloader).
+description: Use when the user asks to sync codebase changes (src, docs, tools, skills, AGENTS.md, pyproject.toml) from the worktree to the local desktop directory (C:\Users\이홍원\Desktop\chzzk_downloader).
 ---
 
 # Desktop Sync (데스크톱 로컬 복사본 동기화 매뉴얼)
 
-이 스킬은 Git 워크트리에서 개발된 최신 코드(`src/`), 규격 문서(`docs/`), 실행 도구(`tools/`), AI 스킬(`skills/`)을 사용자의 로컬 데스크톱 디렉터리(`C:\Users\이홍원\Desktop\chzzk_downloader`)로 안전하고 누락 없이 원클릭 복사 동기화하는 자동화 워크플로우입니다.
+이 스킬은 Git 워크트리에서 개발된 최신 코드(`src/`), 규격 문서(`docs/`), 실행 도구(`tools/`), AI 스킬(`skills/`), 루트 명세(`AGENTS.md`, `pyproject.toml`)를 사용자의 로컬 데스크톱 디렉터리(`C:\Users\이홍원\Desktop\chzzk_downloader`)로 안전하고 누락 없이 원클릭 복사 동기화하는 자동화 워크플로우입니다.
 
-## 1. 동기화 대상 디렉터리
+## 1. 동기화 대상 디렉터리 및 파일
 
 - `src/`: PyQt6 애플리케이션 및 다운로더 코어 패키지 전체
 - `docs/`: UI 피드백 카탈로그, 적대적 검증 가이드, 기획 스펙 전체
-- `tools/`: UI 피드백 프리뷰 실행 스크립트 (`preview_ui_feedbacks.py`)
+- `tools/`: UI 피드백 프리뷰 실행 스크립트 및 기계 검증 도구 전체
 - `.agents/skills/`: 에이전트 자동화 스킬 모음
+- `AGENTS.md`: 기계 검증 규칙 및 7단계 협업 워크플로우 명세 (최신화 자동 전파)
+- `pyproject.toml`: 프로젝트 의존성 및 Ruff/Pytest 설정
 
 ## 2. 에이전트 실행 절차
 
