@@ -705,6 +705,7 @@ class TestSectionEdgeCases:
         ydl = yt_dlp.YoutubeDL({"quiet": True})
         ie_instance = CHZZKVideoIE(ydl)
         result = ie_instance.extract("https://chzzk.naver.com/video/12345")
+        assert isinstance(result, dict)
         assert result["id"] == "12345"
         assert result["title"] == "테스트 제목"
         assert attempts == 2
