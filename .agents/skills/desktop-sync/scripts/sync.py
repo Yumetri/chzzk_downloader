@@ -28,6 +28,12 @@ SYNC_DIRS = [
     ".agents/skills",
 ]
 
+# 동기화 대상 루트 단일 파일 목록
+SYNC_FILES = [
+    "AGENTS.md",
+    "pyproject.toml",
+]
+
 
 def sync_to_desktop() -> bool:
     print(
@@ -58,7 +64,22 @@ def sync_to_desktop() -> bool:
         except Exception as e:
             print(f"[ERR] 동기화 실패 ({dir_rel}): {e}")
 
-    print(f"\n[DONE] 총 {success_count}개 디렉터리 동기화 완료!")
+    for file_rel in SYNC_FILES:
+        src_file = PROJECT_ROOT / file_rel
+        dst_file = DESKTOP_TARGET / file_rel
+
+        if not src_file.exists():
+            print(f"[SKIP] 소스 파일이 없어 건너뜁니다: {file_rel}")
+            continue
+
+        try:
+            shutil.copy2(src_file, dst_file)
+            print(f"[OK] 파일 복사 완료: {file_rel} -> {dst_file}")
+            success_count += 1
+        except Exception as e:
+            print(f"[ERR] 파일 복사 실패 ({file_rel}): {e}")
+
+    print(f"\n[DONE] 총 {success_count}개 항목 동기화 완료!")
     return success_count > 0
 
 
