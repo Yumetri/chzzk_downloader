@@ -7,8 +7,8 @@
   "R6-ui-io": 2,
   "T1-sleep": 17,
   "T2-called": 13,
-  "T3-private": 228,
-  "M1-ticket-words": 80,
+  "T3-private": 225,
+  "M1-ticket-words": 78,
   "R2-file-lines": 6,
-  "M2-ticket-test-files": 6
+  "M2-ticket-test-files": 5
 }
