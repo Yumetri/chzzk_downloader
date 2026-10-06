@@ -305,13 +305,14 @@ def test_toast_unified_dark_background_and_dynamic_pill_sizing(qtbot) -> None:
 
 
 def test_feedback_showcase_task_card_gallery_tab(qtbot) -> None:
-    """피드백 쇼케이스 창에 작업 카드 갤러리 탭이 구성되어 있고 7대 카드가 렌더링되는지 검증."""
+    """피드백 쇼케이스 창에 작업 카드 갤러리 탭이 구성되어 있고 9대 카드가 렌더링되는지 검증."""
     window = FeedbackShowcaseWindow()
     qtbot.addWidget(window)
 
     assert window.tabs.count() == 2
     assert "토스트" in window.tabs.tabText(0)
     assert "작업 목록 카드" in window.tabs.tabText(1)
+    assert "9대 상태" in window.tabs.tabText(1)
 
 
 def test_task_info_window_modeless_and_diagnostic_format(qtbot) -> None:
