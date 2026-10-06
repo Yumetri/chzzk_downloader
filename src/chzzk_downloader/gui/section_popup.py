@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, QRegularExpression, Qt, pyqtSignal
-from PyQt6.QtGui import QRegularExpressionValidator
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -19,6 +19,139 @@ from chzzk_downloader.core.section_parser import (
     parse_timestamp,
     validate_section,
 )
+
+
+class _ZeroPaddedSpinBox(QSpinBox):
+    """2자리 0 채움(00, 01, ...)으로 렌더링하는 정수 스핀박스."""
+
+    def textFromValue(self, val: int) -> str:  # noqa: N802
+        return f"{val:02d}"
+
+
+class _ZeroPaddedDoubleSpinBox(QDoubleSpinBox):
+    """2자리 정수 및 2자리 소수점(00.00)으로 렌더링하는 실수 스핀박스."""
+
+    def textFromValue(self, val: float) -> str:  # noqa: N802
+        return f"{val:05.2f}"
+
+
+class SectionTimeWidget(QWidget):
+    """샤나인코더 스타일 시/분/초 분할 스핀박스 위젯 (상하 증감 화살표, 키보드 방향키, 마우스 롱클릭 지원)."""
+
+    textChanged = pyqtSignal(str)  # noqa: N815
+
+    def __init__(
+        self, default_text: str = "00:00:00.00", parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.hour_spin = _ZeroPaddedSpinBox(self)
+        self.hour_spin.setRange(0, 999)
+        self.hour_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hour_spin.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
+
+        self.colon1 = QLabel(":", self)
+        self.colon1.setStyleSheet("color: #9ca3af; font-weight: bold; border: none;")
+
+        self.min_spin = _ZeroPaddedSpinBox(self)
+        self.min_spin.setRange(0, 59)
+        self.min_spin.setWrapping(True)
+        self.min_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.min_spin.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
+
+        self.colon2 = QLabel(":", self)
+        self.colon2.setStyleSheet("color: #9ca3af; font-weight: bold; border: none;")
+
+        self.sec_spin = _ZeroPaddedDoubleSpinBox(self)
+        self.sec_spin.setRange(0.0, 59.99)
+        self.sec_spin.setDecimals(2)
+        self.sec_spin.setSingleStep(1.0)
+        self.sec_spin.setWrapping(True)
+        self.sec_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sec_spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.UpDownArrows)
+
+        self.hour_spin.setFixedWidth(46)
+        self.min_spin.setFixedWidth(46)
+        self.sec_spin.setFixedWidth(64)
+
+        layout.addWidget(self.hour_spin)
+        layout.addWidget(self.colon1)
+        layout.addWidget(self.min_spin)
+        layout.addWidget(self.colon2)
+        layout.addWidget(self.sec_spin)
+
+        self.hour_spin.valueChanged.connect(self._on_value_changed)
+        self.min_spin.valueChanged.connect(self._on_value_changed)
+        self.sec_spin.valueChanged.connect(self._on_value_changed)
+
+        self._raw_invalid_text: str | None = None
+        if default_text:
+            self.setText(default_text)
+
+    def _on_value_changed(self) -> None:
+        self._raw_invalid_text = None
+        self.textChanged.emit(self.text())
+
+    def total_seconds(self) -> float:
+        return (
+            self.hour_spin.value() * 3600.0
+            + self.min_spin.value() * 60.0
+            + self.sec_spin.value()
+        )
+
+    def is_valid_time(self) -> bool:
+        return self._raw_invalid_text is None
+
+    def set_seconds(self, seconds: float) -> None:
+        self._raw_invalid_text = None
+        sec_val = max(0.0, float(seconds))
+        h = int(sec_val // 3600)
+        m = int((sec_val % 3600) // 60)
+        s = round(sec_val % 60, 2)
+        self.hour_spin.blockSignals(True)
+        self.min_spin.blockSignals(True)
+        self.sec_spin.blockSignals(True)
+        self.hour_spin.setValue(h)
+        self.min_spin.setValue(m)
+        self.sec_spin.setValue(s)
+        self.hour_spin.blockSignals(False)
+        self.min_spin.blockSignals(False)
+        self.sec_spin.blockSignals(False)
+        self.textChanged.emit(self.text())
+
+    def text(self) -> str:
+        if self._raw_invalid_text is not None:
+            return self._raw_invalid_text
+        h = self.hour_spin.value()
+        m = self.min_spin.value()
+        s = self.sec_spin.value()
+        if s == int(s):
+            return f"{h:02d}:{m:02d}:{int(s):02d}"
+        return f"{h:02d}:{m:02d}:{s:05.2f}"
+
+    def setText(self, text_val: str) -> None:  # noqa: N802
+        try:
+            sec = parse_timestamp(text_val)
+            self._raw_invalid_text = None
+            self.set_seconds(sec)
+        except (ValueError, TypeError):
+            self._raw_invalid_text = text_val
+            self.textChanged.emit(self.text())
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802
+        super().setEnabled(enabled)
+        self.hour_spin.setEnabled(enabled)
+        self.min_spin.setEnabled(enabled)
+        self.sec_spin.setEnabled(enabled)
+
+    def setStyleSheet(self, style: str) -> None:  # noqa: N802
+        super().setStyleSheet(style)
+        self.hour_spin.setStyleSheet(style)
+        self.min_spin.setStyleSheet(style)
+        self.sec_spin.setStyleSheet(style)
 
 
 class SectionPopup(QFrame):
@@ -41,9 +174,13 @@ class SectionPopup(QFrame):
             "QCheckBox { color: #f3f4f6; font-size: 11px; spacing: 6px; border: none; }"
             "QCheckBox::indicator { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #4b5563; background: #111827; }"
             "QCheckBox::indicator:checked { background: #3b82f6; border: 1px solid #3b82f6; }"
-            "QLineEdit { background-color: #111827; color: #f3f4f6; border: 1px solid #4b5563; "
-            "border-radius: 4px; padding: 2px 6px; font-size: 11px; font-family: monospace; }"
-            "QLineEdit:disabled { background-color: #1f2937; color: #6b7280; border: 1px solid #374151; }"
+            "QSpinBox, QDoubleSpinBox { background-color: #111827; color: #f3f4f6; border: 1px solid #4b5563; "
+            "border-radius: 4px; padding: 2px 2px; font-size: 11px; font-family: monospace; }"
+            "QSpinBox:disabled, QDoubleSpinBox:disabled { background-color: #1f2937; color: #6b7280; border: 1px solid #374151; }"
+            "QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; "
+            "width: 14px; border-left: 1px solid #374151; border-bottom: 1px solid #374151; background-color: #1f2937; }"
+            "QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; "
+            "width: 14px; border-left: 1px solid #374151; background-color: #1f2937; }"
         )
 
         layout = QVBoxLayout(self)
@@ -55,8 +192,7 @@ class SectionPopup(QFrame):
         start_row.setSpacing(8)
         self.start_check = QCheckBox("시작 시간", self)
         self.start_check.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.start_edit = QLineEdit("00:00:00.00", self)
-        self.start_edit.setFixedWidth(90)
+        self.start_edit = SectionTimeWidget("00:00:00.00", self)
         self.start_edit.setEnabled(False)
         start_row.addWidget(self.start_check)
         start_row.addWidget(self.start_edit)
@@ -67,8 +203,7 @@ class SectionPopup(QFrame):
         end_row.setSpacing(8)
         self.end_check = QCheckBox("종료 시간", self)
         self.end_check.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.end_edit = QLineEdit("00:00:00.00", self)
-        self.end_edit.setFixedWidth(90)
+        self.end_edit = SectionTimeWidget("00:00:00.00", self)
         self.end_edit.setEnabled(False)
         end_row.addWidget(self.end_check)
         end_row.addWidget(self.end_edit)
@@ -79,11 +214,6 @@ class SectionPopup(QFrame):
         self.error_label.setStyleSheet("color: #ef4444; font-size: 10px; border: none;")
         self.error_label.hide()
         layout.addWidget(self.error_label)
-
-        # 타임스탬프 입력 유효성 검사기 (시:분:초.밀리초)
-        time_regex = QRegularExpression(r"^\d{1,3}:[0-5]?\d:[0-5]?\d(\.\d{1,2})?$")
-        self.start_edit.setValidator(QRegularExpressionValidator(time_regex, self))
-        self.end_edit.setValidator(QRegularExpressionValidator(time_regex, self))
 
         # 시그널 연결
         self.start_check.toggled.connect(self._on_check_toggled)
@@ -162,10 +292,15 @@ class SectionPopup(QFrame):
         if not start_active and not end_active:
             return None, None
 
+        if start_active and not self.start_edit.is_valid_time():
+            return None, None
+        if end_active and not self.end_edit.is_valid_time():
+            return None, None
+
         try:
-            start_val = parse_timestamp(self.start_edit.text()) if start_active else 0.0
+            start_val = self.start_edit.total_seconds() if start_active else 0.0
             end_val = (
-                parse_timestamp(self.end_edit.text())
+                self.end_edit.total_seconds()
                 if end_active
                 else (self._duration if self._duration > 0 else None)
             )
@@ -177,13 +312,13 @@ class SectionPopup(QFrame):
         """외부에서 구간 (시작_초, 종료_초)을 프로그래밍 방식으로 설정합니다."""
         if start is not None:
             self.start_check.setChecked(True)
-            self.start_edit.setText(format_timestamp(start, use_fraction=True))
+            self.start_edit.set_seconds(start)
         else:
             self.start_check.setChecked(False)
 
         if end is not None:
             self.end_check.setChecked(True)
-            self.end_edit.setText(format_timestamp(end, use_fraction=True))
+            self.end_edit.set_seconds(end)
         else:
             self.end_check.setChecked(False)
 

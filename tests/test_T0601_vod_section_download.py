@@ -1480,3 +1480,106 @@ class TestSectionEdgeCases:
         assert task_id == "task-123"
         assert duration == 45.5
         assert size == 1234567
+
+    def test_subprocess_tracker_enforces_utf8_and_replace_on_text_pipes(
+        self, monkeypatch: Any
+    ) -> None:
+        """_SubprocessTracker가 text 모드 Popen 호출 시 encoding='utf-8' 및 errors='replace'를 주입하는지 검증."""
+        import subprocess
+
+        from chzzk_downloader.gui.workers import _SubprocessTracker
+
+        captured_kwargs: dict[str, Any] = {}
+
+        class FakePopen:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                captured_kwargs.update(kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+        tracked: set[Any] = set()
+        with _SubprocessTracker(tracked):
+            subprocess.Popen(["cmd.exe"], text=True)
+
+        assert captured_kwargs.get("encoding") == "utf-8"
+        assert captured_kwargs.get("errors") == "replace"
+
+    def test_section_time_spinbox_structure_and_arrow_keys(self, qtbot: Any) -> None:
+        """SectionPopup의 시간 입력 위젯이 시/분/초 분할 스핀박스와 상하 화살표 증감을 지원하는지 검증."""
+        from PyQt6.QtCore import Qt
+
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        popup = SectionPopup()
+        qtbot.addWidget(popup)
+
+        # 시작 시간 위젯이 hour, min, sec 스핀박스를 보유하고 있는지 확인
+        time_widget = popup.start_edit
+        assert hasattr(time_widget, "hour_spin")
+        assert hasattr(time_widget, "min_spin")
+        assert hasattr(time_widget, "sec_spin")
+
+        # 초기 값 검증
+        popup.start_check.setChecked(True)
+        time_widget.setText("01:02:03.00")
+        assert time_widget.hour_spin.value() == 1
+        assert time_widget.min_spin.value() == 2
+        assert abs(time_widget.sec_spin.value() - 3.0) < 0.01
+
+        # 위쪽 방향키(Up) 입력 시 초 스핀박스 값 1 증가 검증
+        qtbot.keyClick(time_widget.sec_spin, Qt.Key.Key_Up)
+        assert abs(time_widget.sec_spin.value() - 4.0) < 0.01
+
+    def test_section_download_in_downloading_state_hides_stop_button(
+        self, qtbot: Any, monkeypatch: Any
+    ) -> None:
+        """구간 다운로드 진행 중(DOWNLOADING)일 때 4번 위치의 정지 버튼(stop_btn)이 숨김 처리되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskStatus
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        monkeypatch.setattr(
+            "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available",
+            lambda auto_download=False: True,
+        )
+
+        card = TaskCardWidget(raw_url="https://chzzk.naver.com/video/12345")
+        qtbot.addWidget(card)
+        card.show()
+
+        # 1. 일반 다운로드 상태 전이 시에는 stop_btn이 보여야 함
+        card.set_task_status(TaskStatus.DOWNLOADING)
+        assert card.stop_btn.isVisible() is True
+
+        # 2. 구간이 적용된 다운로드 카드 생성 및 상태 전이 시 stop_btn이 숨겨져야 함 (방안 A)
+        section_card = TaskCardWidget(raw_url="https://chzzk.naver.com/video/12345")
+        qtbot.addWidget(section_card)
+        section_card.show()
+        section_card.section_popup.set_section_range(10.0, 60.0)
+        section_card.set_task_status(TaskStatus.DOWNLOADING)
+        assert section_card.stop_btn.isVisible() is False
+
+    def test_media_remux_worker_finalizes_media_safely(
+        self, qtbot: Any, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """MediaRemuxWorker가 비동기 스레드에서 무손실 리먹싱을 정상 수행하고 성공 시그널을 방출하는지 검증."""
+        from chzzk_downloader.core import ffmpeg_manager
+        from chzzk_downloader.gui.media_workers import MediaRemuxWorker
+
+        fake_src = tmp_path / "partial.mp4"
+        fake_src.write_bytes(b"partial video data")
+        fake_dst = tmp_path / "final.mp4"
+
+        monkeypatch.setattr(
+            ffmpeg_manager,
+            "remux_media_file",
+            lambda src, dst: True,
+        )
+
+        worker = MediaRemuxWorker("task-999", fake_src, fake_dst)
+        with qtbot.waitSignal(worker.remux_finished, timeout=2000) as blocker:
+            worker.start()
+
+        task_id, success, out_path = blocker.args
+        assert task_id == "task-999"
+        assert success is True
+        assert out_path == str(fake_dst)

@@ -224,6 +224,8 @@ def _probe_single_ffmpeg_binary(
             [str(target_path), "-version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=creationflags,
         )
@@ -272,6 +274,8 @@ def _probe_single_ffmpeg_binary(
             [str(target_path), "-h", "demuxer=hls"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=creationflags,
         )
@@ -731,6 +735,8 @@ def _probe_single_ffprobe_binary(
             [str(target_path), "-version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=creationflags,
         )
@@ -834,6 +840,8 @@ def probe_media_file(
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=creationflags,
         )
@@ -842,6 +850,49 @@ def probe_media_file(
         return json.loads(proc.stdout)
     except Exception:
         return None
+
+
+def remux_media_file(
+    source_path: Path | str,
+    target_path: Path | str,
+    timeout: float = 120.0,
+) -> bool:
+    """FFmpeg 초고속 무손실 패스스루(-c copy)로 미디어를 리먹싱하여 싱크와 moov atom을 정상화합니다."""
+    src = Path(source_path).resolve()
+    dst = Path(target_path).resolve()
+    if not src.exists() or not src.is_file():
+        return False
+
+    ffmpeg_bin = get_ffmpeg_path()
+    if not ffmpeg_bin or not ffmpeg_bin.exists():
+        return False
+
+    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    cmd = [
+        str(ffmpeg_bin),
+        "-y",
+        "-i",
+        str(src),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(dst),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=creationflags,
+        )
+        return proc.returncode == 0 and dst.exists() and dst.stat().st_size > 0
+    except Exception:
+        return False
 
 
 def check_media_container_magic_bytes(file_path: Path | str) -> tuple[bool, str]:

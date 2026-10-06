@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
 
         self.task_manager = TaskManager(max_concurrent_vod=3)
         self._download_workers: dict[str, VodDownloadWorker] = {}
+        self._remux_workers: dict[str, Any] = {}
         self._pending_vod_starts: dict[str, TaskSpec] = {}
         self._init_task_manager()
 
@@ -1051,7 +1052,37 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.task_manager.complete_task(task_id, str(target_path))
+        from chzzk_downloader.core.ffmpeg_manager import is_ffmpeg_available
+        from chzzk_downloader.gui.media_workers import MediaRemuxWorker
+
+        if is_ffmpeg_available(auto_download=False):
+            existing_worker = self._remux_workers.get(task_id)
+            if existing_worker is not None and existing_worker.isRunning():
+                return
+
+            remux_dst = target_path.with_name(
+                f"{target_path.stem}.final{target_path.suffix}"
+            )
+            worker = MediaRemuxWorker(task_id, target_path, remux_dst, parent=self)
+            self._remux_workers[task_id] = worker
+
+            def on_remux_done(tid: str, success: bool, out_path_str: str) -> None:
+                self._remux_workers.pop(tid, None)
+                final_out = Path(out_path_str)
+                if success and final_out.exists() and final_out != target_path:
+                    try:
+                        import os
+
+                        os.replace(final_out, target_path)
+                    except OSError:
+                        pass
+                self.task_manager.complete_task(tid, str(target_path))
+
+            worker.remux_finished.connect(on_remux_done)
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+        else:
+            self.task_manager.complete_task(task_id, str(target_path))
 
     def _on_task_removed(self, task_id: str) -> None:
         """TaskManager로부터 작업 제거 알림을 수신하여 목록에서 카드를 제거합니다."""
@@ -1060,6 +1091,7 @@ class MainWindow(QMainWindow):
             worker.cancel()
         else:
             self._download_workers.pop(task_id, None)
+        self._remux_workers.pop(task_id, None)
         card = self.task_list_widget.find_task_card_by_id(task_id)
         if card is not None and not card.is_deleted and not sip.isdeleted(card):
             self.task_list_widget.remove_task_card(card)

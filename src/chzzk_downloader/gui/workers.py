@@ -39,6 +39,11 @@ class _SubprocessTracker:
         def tracked_init(
             self_proc: subprocess.Popen, *args: Any, **kwargs: Any
         ) -> None:
+            if kwargs.get("text") or kwargs.get("universal_newlines"):
+                if "encoding" not in kwargs or kwargs["encoding"] is None:
+                    kwargs["encoding"] = "utf-8"
+                if "errors" not in kwargs or kwargs["errors"] is None:
+                    kwargs["errors"] = "replace"
             orig_init(self_proc, *args, **kwargs)
             target.add(self_proc)
 
@@ -317,8 +322,12 @@ class VodDownloadWorker(QThread):
                     self._poller.stop()
                     self._poller = None
 
+            is_section = (
+                self.task_spec.section_start is not None
+                or self.task_spec.section_end is not None
+            )
             if self._is_cancelled:
-                self._cleanup_partial_files(delete_media=False)
+                self._cleanup_partial_files(delete_media=is_section)
                 self.download_stopped.emit(self.task_id)
                 return
 
@@ -337,7 +346,11 @@ class VodDownloadWorker(QThread):
             self.download_finished.emit(self.task_id, str(final_path))
 
         except DownloadCancelledError:
-            self._cleanup_partial_files(delete_media=False)
+            is_section = (
+                self.task_spec.section_start is not None
+                or self.task_spec.section_end is not None
+            )
+            self._cleanup_partial_files(delete_media=is_section)
             self.download_stopped.emit(self.task_id)
         except Exception as e:
             self._cleanup_partial_files(delete_media=False)
@@ -352,43 +365,18 @@ class VodDownloadWorker(QThread):
                 )
 
 
-class MediaProbeWorker(QThread):
-    """로컬 미디어 파일의 실제 재생 시간과 파일 크기를 비동기로 프로빙하는 경량 워커 (R6 준수)."""
+from chzzk_downloader.gui.media_workers import (  # noqa: E402
+    MediaProbeWorker,
+    MediaRemuxWorker,
+)
 
-    probed = pyqtSignal(str, float, int)  # (task_id, duration_seconds, file_size_bytes)
-    failed = pyqtSignal(str, str)  # (task_id, error_message)
-
-    def __init__(self, task_id: str, file_path: Path | str, parent: Any = None) -> None:
-        super().__init__(parent)
-        self.task_id = task_id
-        self.file_path = Path(file_path)
-
-    def run(self) -> None:
-        try:
-            from chzzk_downloader.core.ffmpeg_manager import probe_media_file
-
-            meta = probe_media_file(self.file_path)
-            dur = 0.0
-            size = 0
-            if isinstance(meta, dict):
-                fmt = (
-                    meta.get("format") if isinstance(meta.get("format"), dict) else meta
-                )
-                try:
-                    dur = float(fmt.get("duration", 0.0))
-                except (ValueError, TypeError):
-                    dur = 0.0
-                try:
-                    size = int(fmt.get("size", 0))
-                except (ValueError, TypeError):
-                    size = 0
-
-            if size <= 0 and self.file_path.exists():
-                try:
-                    size = self.file_path.stat().st_size
-                except OSError:
-                    pass
-            self.probed.emit(self.task_id, dur, size)
-        except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as exc:
-            logger.debug("미디어 파일 프로빙 실패 (%s): %s", self.task_id, exc)
-            self.failed.emit(self.task_id, str(exc))
+__all__ = [
+    "CookieVerifyWorker",
+    "DownloadCancelledError",
+    "FFmpegBootstrapWorker",
+    "MediaProbeWorker",
+    "MediaRemuxWorker",
+    "VodCheckWorker",
+    "VodDownloadWorker",
+    "_SubprocessTracker",
+]

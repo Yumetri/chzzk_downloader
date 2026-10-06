@@ -332,6 +332,7 @@ class TaskCardWidget(QFrame):
         self._probe_worker: Any = None
         self._thumb_loader: ThumbnailLoaderThread | None = None
         self._info_win: Any = None
+        self.section_popup: Any = None
 
         self.custom_download_dir: Path | None = None
         self.target_path: Path | None = None
@@ -346,6 +347,20 @@ class TaskCardWidget(QFrame):
 
         if self.vod_info and self.vod_info.thumbnail_url:
             self._load_thumbnail(self.vod_info.thumbnail_url)
+
+    @property
+    def is_section_download(self) -> bool:
+        """구간 다운로드가 설정된 작업인지 여부를 반환합니다."""
+        if (
+            self._applied_section_start is not None
+            or self._applied_section_end is not None
+        ):
+            return True
+        if self.section_popup is not None:
+            s_start, s_end = self.section_popup.get_section_range()
+            if s_start is not None or s_end is not None:
+                return True
+        return False
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(400, 88)
@@ -2040,6 +2055,10 @@ class TaskCardWidget(QFrame):
                 self.live_recording_container.hide()
                 self.vod_downloading_container.show()
                 self.progress_bar.show()
+                if self.is_section_download:
+                    self.stop_btn.hide()
+                else:
+                    self.stop_btn.show()
                 if hasattr(self, "icon_metrics_widget"):
                     self.icon_metrics_widget.hide()
                 if hasattr(self, "vod_metrics_widget"):
