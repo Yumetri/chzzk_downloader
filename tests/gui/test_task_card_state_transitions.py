@@ -1,5 +1,6 @@
 """작업 카드 상태 전이(ANALYZING -> READY -> DOWNLOADING -> STOPPED) 및 재다운로드 클린 리셋 GUI 테스트."""
 
+from threading import Event
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,7 @@ from chzzk_downloader.core.settings_manager import update_current_settings
 from chzzk_downloader.core.ytdlp import VodFormatInfo, VodInfo
 from chzzk_downloader.gui.main_window import MainWindow
 from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+from chzzk_downloader.gui.workers import VodDownloadWorker
 
 
 @pytest.fixture
@@ -19,6 +21,35 @@ def main_window(qtbot):
     qtbot.addWidget(window)
     window.show()
     return window
+
+
+@pytest.fixture
+def controlled_download_worker(monkeypatch):
+    """재다운로드 설정 검사를 외부 네트워크와 분리하고 워커 종료를 제어합니다."""
+    started = Event()
+    release = Event()
+    finished = Event()
+    workers = []
+
+    class ControlledDownloadWorker(VodDownloadWorker):
+        def __init__(self, task_spec, parent=None):
+            super().__init__(task_spec, parent)
+            self.finished.connect(finished.set)
+            workers.append(self)
+
+        def run(self) -> None:
+            started.set()
+            release.wait(timeout=5)
+            self.download_stopped.emit(self.task_id)
+
+    monkeypatch.setattr(
+        "chzzk_downloader.gui.main_window.VodDownloadWorker",
+        ControlledDownloadWorker,
+    )
+    yield started, release, finished
+    release.set()
+    for worker in workers:
+        assert worker.wait(3000)
 
 
 @pytest.mark.ticket("T0109")
@@ -185,7 +216,7 @@ def test_vod_auto_download_on_downloads_with_settings_default_quality_and_extens
 
 @pytest.mark.ticket("T0109")
 def test_stopped_vod_redownload_applies_new_settings_quality_and_extension(
-    main_window, qtbot
+    main_window, qtbot, controlled_download_worker
 ) -> None:
     """[T0109] URL 입력 -> 설정에서 기본화질/확장자 변경 -> 작업 중단 -> 동일 URL 재시작 시 최신 설정을 따르는지 검증."""
     update_current_settings(
@@ -216,12 +247,23 @@ def test_stopped_vod_redownload_applies_new_settings_quality_and_extension(
         assert card.quality_combo.currentText() == "1080p60"
         assert card.ext_combo.currentText() == ".mp4"
 
-        # 다운로드 시작 후 즉시 중단
+        # 워커가 실제 시작된 뒤 중단하고 종료 ACK까지 기다립니다.
+        started, release, finished = controlled_download_worker
         card.trigger_start_download()
         assert card.status == TaskStatus.DOWNLOADING
+        qtbot.waitUntil(started.is_set, timeout=2000)
         with patch.object(card, "_confirm_stop_dialog", return_value=True):
             card.trigger_stop_download()
         assert card.status == TaskStatus.STOPPED
+        release.set()
+        qtbot.waitUntil(
+            lambda: (
+                finished.is_set()
+                and main_window.task_manager.get_task_status(card.task_id)
+                == TaskStatus.STOPPED
+            ),
+            timeout=2000,
+        )
 
         # 설정 변경
         update_current_settings(

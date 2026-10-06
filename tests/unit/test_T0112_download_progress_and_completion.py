@@ -259,6 +259,46 @@ def test_delete_file_action_enabled_states(qapp):
     assert card.action_delete_file_btn.isHidden()
 
 
+def test_task_card_stopped_shows_actual_downloaded_duration_not_total_vod(
+    qtbot,
+):
+    """다운로드 도중 중단 시 3번 위치에 전체 영상 길이가 아닌 실제 다운로드된 영상 길이가 표시되는지 검증."""
+    vod_info = VodInfo(
+        video_no="15033444",
+        video_title="테스트 영상",
+        channel_name="테스트 스트리머",
+        duration=3600,
+    )
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.DOWNLOADING,
+        vod_info=vod_info,
+        is_live=False,
+    )
+    qtbot.addWidget(card)
+
+    # 25% 다운로드 진행 (3600초의 25% = 900초 = 15분)
+    prog = TaskProgress(
+        task_id="15033444",
+        downloaded_bytes=250_000_000,
+        total_bytes=1_000_000_000,
+        percentage=25.0,
+        speed_str="10.0 MB/s",
+        eta_seconds=2700,
+        eta_str="00:45:00",
+        elapsed_seconds=300.0,
+    )
+    card.update_progress(prog)
+
+    # 중단 상태로 전이
+    card.set_task_status(TaskStatus.STOPPED)
+
+    # 전체 길이(01:00:00)가 아니라 실제 다운로드 분량(15:00)이 노출되어야 함
+    assert card.time_metric_label.text() == "15:00", (
+        f"중단 시 실제 다운로드된 영상 길이가 아닌 다른 값이 표시되었습니다: {card.time_metric_label.text()}"
+    )
+
+
 def test_delete_file_action_triggers_m11_and_deletes_file(qapp, tmp_path):
     """파일 삭제 클릭 시 M11 모달 승인을 거쳐 파일이 삭제되고 카드가 자동 제거 요청되는지 검증."""
     dummy_file = tmp_path / "to_delete.mp4"

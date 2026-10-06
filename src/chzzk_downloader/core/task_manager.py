@@ -393,6 +393,84 @@ class TaskManager:
         self._enqueue_and_dispatch_events(events)
         return True
 
+    def retry_task(self, task_id: str) -> bool:
+        """취소 또는 실패 상태의 작업을 재시도 큐 또는 다운로드 창구에 안전하게 재진입시킵니다."""
+        events: list[tuple] = []
+        with self._lock:
+            spec = self._specs.get(task_id)
+            if not spec:
+                return False
+
+            curr_status = self._statuses.get(task_id)
+            if curr_status in (
+                TaskStatus.DOWNLOADING,
+                TaskStatus.QUEUED,
+                TaskStatus.COMPLETED,
+            ):
+                return False
+
+            new_status: TaskStatus
+            if spec.is_live:
+                self._running_live_ids.add(task_id)
+                self._statuses[task_id] = TaskStatus.DOWNLOADING
+                new_status = TaskStatus.DOWNLOADING
+            elif len(self._running_vod_ids) < self.max_concurrent_vod:
+                self._running_vod_ids.add(task_id)
+                self._statuses[task_id] = TaskStatus.DOWNLOADING
+                new_status = TaskStatus.DOWNLOADING
+            else:
+                self._queue.enqueue(spec)
+                self._statuses[task_id] = TaskStatus.QUEUED
+                new_status = TaskStatus.QUEUED
+
+            self._last_progress_time.pop(task_id, None)
+            events.append(("status_changed", task_id, curr_status, new_status))
+            r_vod = len(self._running_vod_ids)
+            q_vod = len(self._queue)
+            r_live = len(self._running_live_ids)
+            events.append(("queue_updated", r_vod, q_vod, r_live))
+
+        self._enqueue_and_dispatch_events(events)
+        return True
+
+    def complete_task(self, task_id: str, final_file_path: str = "") -> bool:
+        """중단(STOPPED) 또는 실패(FAILED_DOWNLOAD, FAILED_LOGIN_REQUIRED)된 작업의 현재 보존 파일을 최종본으로 확정하여 COMPLETED 상태로 전이합니다."""
+        events: list[tuple] = []
+        with self._lock:
+            spec = self._specs.get(task_id)
+            if not spec:
+                return False
+
+            curr_status = self._statuses.get(task_id)
+            if curr_status not in (
+                TaskStatus.STOPPED,
+                TaskStatus.FAILED_DOWNLOAD,
+                TaskStatus.FAILED_LOGIN_REQUIRED,
+            ):
+                return False
+
+            self._statuses[task_id] = TaskStatus.COMPLETED
+            self._last_progress_time.pop(task_id, None)
+
+            events.append(
+                (
+                    "status_changed",
+                    task_id,
+                    curr_status,
+                    TaskStatus.COMPLETED,
+                )
+            )
+            path_str = final_file_path or str(spec.save_path)
+            events.append(("completed", task_id, path_str))
+
+            r_vod = len(self._running_vod_ids)
+            q_vod = len(self._queue)
+            r_live = len(self._running_live_ids)
+            events.append(("queue_updated", r_vod, q_vod, r_live))
+
+        self._enqueue_and_dispatch_events(events)
+        return True
+
     def _schedule_next_vod_locked(self, events: list[tuple]) -> None:
         """동일 락(_lock) 내부에서 호출되어 슬롯 여유만큼 대기열 최우선 VOD를 인출하고 슬롯을 즉시 점유합니다."""
         while len(self._running_vod_ids) < self.max_concurrent_vod:
