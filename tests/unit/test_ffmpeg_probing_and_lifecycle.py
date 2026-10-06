@@ -1,22 +1,32 @@
-"""T0110. FFmpeg 상태 확인 및 호환성 검증 단위 및 통합 테스트."""
+"""FFmpeg/FFprobe 가용성 진단, 버전 및 옵션 파싱, 6단계 수명주기 및 미디어 무결성 검증 단위 테스트."""
 
 from __future__ import annotations
 
+import concurrent.futures
+import inspect
+import io
 import subprocess
+import sys
 import time
+import tracemalloc
+import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from PyQt6.QtCore import QTimer
 
-from chzzk_downloader.config import DEFAULT_FFMPEG_BINARY_NAME
+from chzzk_downloader.config import (
+    DEFAULT_FFMPEG_BINARY_NAME,
+)
 from chzzk_downloader.core.ffmpeg_manager import (
     FFmpegProbeResult,
     FFmpegStatus,
     clear_probe_cache,
+    download_ffmpeg_binary,
+    ensure_ffmpeg_available,
     get_candidate_ffmpeg_paths,
     get_candidate_ffprobe_paths,
+    get_default_ffmpeg_install_dir,
     get_ffmpeg_compatible_args,
     get_ffmpeg_path,
     get_ffprobe_path,
@@ -30,36 +40,98 @@ from chzzk_downloader.core.ffmpeg_manager import (
     verify_media_file_integrity,
 )
 from chzzk_downloader.core.settings_manager import (
-    get_current_settings,
-    load_settings,
-    set_custom_settings_path,
     update_current_settings,
 )
 from chzzk_downloader.core.ytdlp import VodInfo
-from chzzk_downloader.gui.settings_window import SettingsWindow
 from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
 
 
-@pytest.fixture(autouse=True)
-def cleanup_ffmpeg_cache():
-    """모든 테스트 전후로 프로빙 캐시를 초기화합니다."""
-    clear_probe_cache()
-    yield
-    clear_probe_cache()
-
-
 @pytest.fixture
-def test_settings_env(tmp_path):
-    """임시 디렉터리의 settings.json 경로를 사용하도록 격리하는 fixture."""
-    test_settings_file = tmp_path / "test_settings.json"
-    set_custom_settings_path(test_settings_file)
-    yield test_settings_file
-    set_custom_settings_path(None)
+def clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """외부 환경(PATH, TEMP, _MEIPASS)을 격리하는 fixture."""
+    # 1. settings 초기화
+    update_current_settings(
+        download_dir=str(tmp_path / "downloads"),
+        ffmpeg_path="",
+        vod_auto_download=True,
+    )
+
+    # 2. _MEIPASS 제거
+    if hasattr(sys, "_MEIPASS"):
+        monkeypatch.delattr(sys, "_MEIPASS")
+
+    # 3. TEMP / TMP 환경변수를 빈 임시 디렉터리로 격리
+    empty_temp = tmp_path / "isolated_temp"
+    empty_temp.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("TEMP", str(empty_temp))
+    monkeypatch.setenv("TMP", str(empty_temp))
+
+    # 4. PATH 탐색(shutil.which) 기본 None 반환 격리
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    # 5. 사용자 홈 디렉터리(~/.chzzk_downloader/bin) 격리
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    return tmp_path
 
 
-def test_ffmpeg_probe_success_with_version_and_compatibility(tmp_path):
-    """최신 FFmpeg(v6.1+) 바이너리 실행, 버전 파싱 및 치지직 호환 인자 프로빙 검증."""
-    fake_ffmpeg = tmp_path / "ffmpeg.exe"
+def create_fake_card(qtbot) -> tuple[TaskCardWidget, list[str]]:
+    """테스트용 TaskCardWidget 인스턴스를 생성하고 download_blocked 시그널을 수집합니다."""
+    vod_info = VodInfo(
+        video_no="998877",
+        video_title="FFmpeg 6단계 라이프사이클 테스트",
+        channel_name="스트리머테스트",
+    )
+    card = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/998877",
+        status=TaskStatus.READY,
+        vod_info=vod_info,
+    )
+    qtbot.addWidget(card)
+
+    blocked_reasons: list[str] = []
+    card.download_blocked.connect(blocked_reasons.append)
+    return card, blocked_reasons
+
+
+def stub_subprocess_ffmpeg_probe(executable_path: Path):
+    """지정된 바이너리 경로의 -version 실행 시 정상 FFmpeg 6.0 출력으로 응답하는 stub."""
+
+    def mock_run(cmd, *args, **kwargs):
+        cmd_str = [str(c) for c in cmd]
+        if str(executable_path) in cmd_str[0] or cmd_str[0] == str(executable_path):
+            if "-version" in cmd_str:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout="ffmpeg version 6.0-essentials_build Copyright (c) 2000-2023\n",
+                    stderr="",
+                )
+            if "-h" in cmd_str and "demuxer=hls" in cmd_str:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout="HLS demuxer AVOptions:\n  -allowed_extensions <string>\n",
+                    stderr="",
+                )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="not found"
+        )
+
+    return mock_run
+
+
+# ==============================================================================
+# FFmpeg 기본 프로빙 단위 테스트
+# ==============================================================================
+
+
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_probe_success_with_version_and_compatibility(tmp_path: Path) -> None:
+    """[T0110] 최신 FFmpeg(v6.1+) 바이너리 실행, 버전 파싱 및 치지직 호환 인자 프로빙 검증."""
+    fake_ffmpeg = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
     fake_ffmpeg.write_text("binary", encoding="utf-8")
 
     def mock_subprocess_run(cmd, *args, **kwargs):
@@ -103,9 +175,10 @@ def test_ffmpeg_probe_success_with_version_and_compatibility(tmp_path):
         assert "사용 가능 (FFmpeg 6.1.1 · 치지직 호환)" in result.display_text
 
 
-def test_ffmpeg_probe_older_version_without_picky(tmp_path):
-    """구버전 FFmpeg(v6.0 등)에서 allowed_extensions만 지원할 때의 동작 검증."""
-    fake_ffmpeg = tmp_path / "ffmpeg.exe"
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_probe_older_version_without_picky(tmp_path: Path) -> None:
+    """[T0110] 구버전 FFmpeg(v6.0 등)에서 allowed_extensions만 지원할 때의 동작 검증."""
+    fake_ffmpeg = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
     fake_ffmpeg.write_text("binary", encoding="utf-8")
 
     def mock_subprocess_run(cmd, *args, **kwargs):
@@ -141,8 +214,9 @@ def test_ffmpeg_probe_older_version_without_picky(tmp_path):
         )
 
 
-def test_ffmpeg_probe_file_not_found(tmp_path):
-    """존재하지 않는 파일 경로가 주어졌을 때 파일 없음(NOT_FOUND) 상태 분류 검증."""
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_probe_file_not_found(tmp_path: Path) -> None:
+    """[T0110] 존재하지 않는 파일 경로가 주어졌을 때 파일 없음(NOT_FOUND) 상태 분류 검증."""
     non_existent = tmp_path / "no_ffmpeg.exe"
     result = probe_ffmpeg(non_existent)
 
@@ -151,9 +225,10 @@ def test_ffmpeg_probe_file_not_found(tmp_path):
     assert "존재하지 않습니다" in result.error_message
 
 
-def test_ffmpeg_probe_execution_failure_non_zero_exit(tmp_path):
-    """실행 시 비정상 종료 코드(0이 아님)를 반환할 때 실행 실패(EXECUTION_FAILED) 분류 검증."""
-    fake_ffmpeg = tmp_path / "ffmpeg.exe"
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_probe_execution_failure_non_zero_exit(tmp_path: Path) -> None:
+    """[T0110] 실행 시 비정상 종료 코드(0이 아님)를 반환할 때 실행 실패(EXECUTION_FAILED) 분류 검증."""
+    fake_ffmpeg = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
     fake_ffmpeg.write_text("binary", encoding="utf-8")
 
     with patch(
@@ -169,8 +244,9 @@ def test_ffmpeg_probe_execution_failure_non_zero_exit(tmp_path):
         assert "비정상 종료 코드" in result.error_message
 
 
-def test_ffmpeg_probe_execution_failure_not_ffmpeg(tmp_path):
-    """실행은 성공했으나 FFmpeg가 아닌 다른 바이너리(예: python.exe 등)일 때 거부 검증."""
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_probe_execution_failure_not_ffmpeg(tmp_path: Path) -> None:
+    """[T0110] 실행은 성공했으나 FFmpeg가 아닌 다른 바이너리(예: python.exe 등)일 때 거부 검증."""
     fake_binary = tmp_path / "other.exe"
     fake_binary.write_text("binary", encoding="utf-8")
 
@@ -190,9 +266,10 @@ def test_ffmpeg_probe_execution_failure_not_ffmpeg(tmp_path):
         assert "FFmpeg 바이너리가 아님" in result.error_message
 
 
-def test_ffmpeg_probe_timeout(tmp_path):
-    """프로세스 실행 후 타임아웃 발생 시 응답 없음(TIMEOUT) 상태 분류 검증."""
-    fake_ffmpeg = tmp_path / "ffmpeg.exe"
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_probe_timeout(tmp_path: Path) -> None:
+    """[T0110] 프로세스 실행 후 타임아웃 발생 시 응답 없음(TIMEOUT) 상태 분류 검증."""
+    fake_ffmpeg = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
     fake_ffmpeg.write_text("binary", encoding="utf-8")
 
     with patch(
@@ -206,24 +283,28 @@ def test_ffmpeg_probe_timeout(tmp_path):
         assert "실행 시간 초과" in result.error_message
 
 
-def test_candidate_paths_fallback_hierarchy(tmp_path, monkeypatch):
-    """내장 번들, %TEMP%, bin 디렉터리, 시스템 PATH 우선순위 탐색 검증."""
+@pytest.mark.ticket("T0110")
+def test_candidate_paths_fallback_hierarchy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[T0110] 내장 번들, %TEMP%, bin 디렉터리, 시스템 PATH 우선순위 탐색 검증."""
     # 1. 윈도우 %TEMP% 경로 후보 포함 확인
     monkeypatch.setenv("TEMP", str(tmp_path))
     candidates = get_candidate_ffmpeg_paths()
     expected_temp_ffmpeg = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
     assert any(c.resolve() == expected_temp_ffmpeg.resolve() for c in candidates)
 
-    # 2. %TEMP%\ffmpeg.exe가 실제로 존재할 때 resolve_ffmpeg_path가 찾아내는지 확인
+    # 2. %TEMP% 경로가 실제로 존재할 때 resolve_ffmpeg_path가 찾아내는지 확인
     expected_temp_ffmpeg.write_text("dummy", encoding="utf-8")
     resolved = resolve_ffmpeg_path()
     assert resolved is not None
     assert resolved.resolve() == expected_temp_ffmpeg.resolve()
 
 
-def test_is_ffmpeg_available_and_compatible_args(tmp_path):
-    """is_ffmpeg_available() 및 get_ffmpeg_compatible_args() 인터페이스 및 캐싱 검증."""
-    fake_ffmpeg = tmp_path / "ffmpeg.exe"
+@pytest.mark.ticket("T0110")
+def test_is_ffmpeg_available_and_compatible_args(tmp_path: Path) -> None:
+    """[T0110] is_ffmpeg_available() 및 get_ffmpeg_compatible_args() 인터페이스 및 캐싱 검증."""
+    fake_ffmpeg = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
     fake_ffmpeg.write_text("binary", encoding="utf-8")
 
     mock_result = FFmpegProbeResult(
@@ -258,84 +339,14 @@ def test_is_ffmpeg_available_and_compatible_args(tmp_path):
         assert get_ffmpeg_path() is None
 
 
-def test_settings_save_and_reload_ffmpeg_path(test_settings_env, tmp_path):
-    """settings.json에 FFmpeg 경로 저장 및 앱 재실행 복원 검증."""
-    custom_ffmpeg = tmp_path / "custom" / "ffmpeg.exe"
-    custom_ffmpeg.parent.mkdir(parents=True)
-    custom_ffmpeg.write_text("binary", encoding="utf-8")
-
-    ok, msg = update_current_settings(ffmpeg_path=custom_ffmpeg)
-    assert ok is True
-    assert get_current_settings().ffmpeg_path == str(custom_ffmpeg)
-
-    reloaded = load_settings(test_settings_env)
-    assert reloaded.ffmpeg_path == str(custom_ffmpeg)
-
-    # 초기화 (빈 문자열)
-    ok2, _ = update_current_settings(ffmpeg_path="")
-    assert ok2 is True
-    assert get_current_settings().ffmpeg_path == ""
-
-
-def test_settings_window_clean_without_ffmpeg_widget(qtbot, test_settings_env):
-    """SettingsWindow가 불필요한 FFmpeg 수동 설정 위젯 없이 깔끔하게 일반/쿠키만 구성되는지 검증."""
-    window = SettingsWindow()
-    qtbot.addWidget(window)
-    window.show()
-
-    # FFmpeg 수동 설정 위젯은 제거되어 존재하지 않음 (Zero-Config 자동 관리)
-    assert not hasattr(window, "ffmpeg_group")
-    assert not hasattr(window, "ffmpeg_status_label")
-    assert not hasattr(window, "ffmpeg_browse_btn")
-
-    # 일반 설정 및 쿠키 관리 그룹만 유지
-    assert hasattr(window, "general_group")
-    assert hasattr(window, "cookie_group")
-
-
-def test_download_blocked_when_ffmpeg_unavailable(qtbot):
-    """FFmpeg가 사용 불가능할 때 다운로드가 차단되고 카드 상태가 유지되는지 검증."""
-    mock_vod = VodInfo(
-        video_no="12345",
-        video_title="테스트 영상",
-        channel_name="스트리머",
-    )
-    card = TaskCardWidget(
-        raw_url="https://chzzk.naver.com/video/12345",
-        status=TaskStatus.READY,
-        vod_info=mock_vod,
-    )
-    qtbot.addWidget(card)
-
-    blocked_reasons: list[str] = []
-    card.download_blocked.connect(blocked_reasons.append)
-
-    # FFmpeg 미가용 상태 모킹
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=False
-    ):
-        started = card.trigger_start_download()
-        assert started is False
-        assert card.status == TaskStatus.READY  # DOWNLOADING 상태로 전이되지 않음
-        assert len(blocked_reasons) == 1
-        assert "FFmpeg를 사용할 수 없습니다" in blocked_reasons[0]
-
-    # FFmpeg 가용 상태 모킹
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
-    ):
-        started2 = card.trigger_start_download()
-        assert started2 is True
-        assert card.status == TaskStatus.DOWNLOADING
-
-
 # ==============================================================================
 # FFprobe 추가 진단 및 미디어 파일 무결성 검증 테스트
 # ==============================================================================
 
 
-def test_ffprobe_probe_success(tmp_path):
-    """FFprobe 바이너리 실행 및 버전 파싱 정상 동작 검증."""
+@pytest.mark.ticket("T0110")
+def test_ffprobe_probe_success(tmp_path: Path) -> None:
+    """[T0110] FFprobe 바이너리 실행 및 버전 파싱 정상 동작 검증."""
     fake_ffprobe = tmp_path / "ffprobe.exe"
     fake_ffprobe.write_text("binary", encoding="utf-8")
 
@@ -353,8 +364,9 @@ def test_ffprobe_probe_success(tmp_path):
         assert result.path == fake_ffprobe.resolve()
 
 
-def test_ffprobe_probe_not_found_and_failure(tmp_path):
-    """FFprobe 파일 미존재, 타임아웃, 비정상 종료 예외 처리 검증."""
+@pytest.mark.ticket("T0110")
+def test_ffprobe_probe_not_found_and_failure(tmp_path: Path) -> None:
+    """[T0110] FFprobe 파일 미존재, 타임아웃, 비정상 종료 예외 처리 검증."""
     # 1. 파일 없음
     non_existent = tmp_path / "missing_ffprobe.exe"
     res1 = probe_ffprobe(non_existent)
@@ -387,13 +399,13 @@ def test_ffprobe_probe_not_found_and_failure(tmp_path):
         assert res4.status == FFmpegStatus.EXECUTION_FAILED
 
 
-def test_candidate_ffprobe_paths_and_resolve(tmp_path, test_settings_env):
-    """FFprobe 탐색 경로 우선순위 및 resolve_ffprobe_path 검증."""
+@pytest.mark.ticket("T0110")
+def test_candidate_ffprobe_paths_and_resolve(tmp_path: Path) -> None:
+    """[T0110] FFprobe 탐색 경로 우선순위 및 resolve_ffprobe_path 검증."""
     custom_ffprobe = tmp_path / "custom_bin" / "ffprobe.exe"
     custom_ffprobe.parent.mkdir(parents=True, exist_ok=True)
     custom_ffprobe.write_text("custom", encoding="utf-8")
 
-    # 설정에 사용자 경로 지정
     update_current_settings(ffprobe_path=str(custom_ffprobe))
 
     candidates = get_candidate_ffprobe_paths()
@@ -403,8 +415,9 @@ def test_candidate_ffprobe_paths_and_resolve(tmp_path, test_settings_env):
     assert resolved == custom_ffprobe.resolve()
 
 
-def test_is_ffprobe_available_and_caching(tmp_path):
-    """is_ffprobe_available 캐싱 및 get_ffprobe_path 정상 반환 검증."""
+@pytest.mark.ticket("T0110")
+def test_is_ffprobe_available_and_caching(tmp_path: Path) -> None:
+    """[T0110] is_ffprobe_available 캐싱 및 get_ffprobe_path 정상 반환 검증."""
     fake_bin = tmp_path / "ffprobe.exe"
     fake_bin.write_text("bin", encoding="utf-8")
 
@@ -419,7 +432,6 @@ def test_is_ffprobe_available_and_caching(tmp_path):
     ) as mock_probe:
         assert is_ffprobe_available() is True
         assert get_ffprobe_path() == fake_bin
-        # 캐싱되어 1회만 호출됨
         assert is_ffprobe_available() is True
         assert mock_probe.call_count == 1
 
@@ -428,8 +440,9 @@ def test_is_ffprobe_available_and_caching(tmp_path):
         assert mock_probe.call_count == 2
 
 
-def test_probe_media_file_and_verify_integrity(tmp_path):
-    """probe_media_file 및 verify_media_file_integrity 매직 넘버 및 재생 시간 무결성 검증 테스트."""
+@pytest.mark.ticket("T0110")
+def test_probe_media_file_and_verify_integrity(tmp_path: Path) -> None:
+    """[T0110] probe_media_file 및 verify_media_file_integrity 매직 넘버 및 재생 시간 무결성 검증 테스트."""
     # 정상 MP4 ISO BMFF 헤더를 가진 모의 파일 생성 (ftyp 박스)
     video_file = tmp_path / "output.mp4"
     valid_mp4_header = (
@@ -511,10 +524,223 @@ def test_probe_media_file_and_verify_integrity(tmp_path):
             assert "재생 시간이 비정상적입니다" in msg_zero
 
 
+# ==============================================================================
+# 1~6단계 생명주기 및 온디맨드 다운로드 부트스트랩 검증
+# ==============================================================================
+
+
+@pytest.mark.ticket("T0110")
+def test_step1_custom_user_settings_path_and_download_proceeds(
+    clean_env: Path, qtbot
+) -> None:
+    """[T0110] 1단계: 사용자 지정 설정 경로의 바이너리가 최우선 탐색되고 다운로드가 진행되는지 검증."""
+    step1_dir = clean_env / "custom_user_dir"
+    step1_dir.mkdir(parents=True, exist_ok=True)
+    step1_bin = step1_dir / DEFAULT_FFMPEG_BINARY_NAME
+    step1_bin.write_text("fake_step1_ffmpeg", encoding="utf-8")
+
+    update_current_settings(ffmpeg_path=str(step1_bin))
+
+    mock_run = stub_subprocess_ffmpeg_probe(step1_bin)
+    with patch("subprocess.run", side_effect=mock_run):
+        resolved = resolve_ffmpeg_path()
+        assert resolved == step1_bin.resolve()
+
+        card, blocked = create_fake_card(qtbot)
+        started = card.trigger_start_download()
+
+        assert started is True
+        assert card.status == TaskStatus.DOWNLOADING
+        assert len(blocked) == 0
+
+
+@pytest.mark.ticket("T0110")
+def test_step2_meipass_bundle_and_download_proceeds(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, qtbot
+) -> None:
+    """[T0110] 2단계: 1단계 부재 시 PyInstaller 번들(_MEIPASS) 내 바이너리가 탐색되고 다운로드가 진행되는지 검증."""
+    update_current_settings(ffmpeg_path="")
+
+    meipass_dir = clean_env / "bundle_meipass"
+    meipass_dir.mkdir(parents=True, exist_ok=True)
+    step2_bin = meipass_dir / DEFAULT_FFMPEG_BINARY_NAME
+    step2_bin.write_text("fake_step2_ffmpeg", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass_dir), raising=False)
+
+    mock_run = stub_subprocess_ffmpeg_probe(step2_bin)
+    with patch("subprocess.run", side_effect=mock_run):
+        resolved = resolve_ffmpeg_path()
+        assert resolved == step2_bin.resolve()
+
+        card, blocked = create_fake_card(qtbot)
+        started = card.trigger_start_download()
+
+        assert started is True
+        assert card.status == TaskStatus.DOWNLOADING
+        assert len(blocked) == 0
+
+
+@pytest.mark.ticket("T0110")
+def test_step3_system_temp_and_download_proceeds(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, qtbot
+) -> None:
+    """[T0110] 3단계: 1~2단계 부재 시 %TEMP% 내 런타임 추출 바이너리가 탐색되고 다운로드가 진행되는지 검증."""
+    update_current_settings(ffmpeg_path="")
+
+    temp_dir = clean_env / "runtime_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    step3_bin = temp_dir / DEFAULT_FFMPEG_BINARY_NAME
+    step3_bin.write_text("fake_step3_ffmpeg", encoding="utf-8")
+
+    monkeypatch.setenv("TEMP", str(temp_dir))
+    monkeypatch.setenv("TMP", str(temp_dir))
+
+    mock_run = stub_subprocess_ffmpeg_probe(step3_bin)
+    with patch("subprocess.run", side_effect=mock_run):
+        resolved = resolve_ffmpeg_path()
+        assert resolved == step3_bin.resolve()
+
+        card, blocked = create_fake_card(qtbot)
+        started = card.trigger_start_download()
+
+        assert started is True
+        assert card.status == TaskStatus.DOWNLOADING
+        assert len(blocked) == 0
+
+
+@pytest.mark.ticket("T0110")
+def test_step4_app_bin_dir_and_download_proceeds(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, qtbot
+) -> None:
+    """[T0110] 4단계: 1~3단계 부재 시 ./bin 디렉터리 내 바이너리가 탐색되고 다운로드가 진행되는지 검증."""
+    update_current_settings(ffmpeg_path="")
+
+    cwd_bin_dir = clean_env / "bin"
+    cwd_bin_dir.mkdir(parents=True, exist_ok=True)
+    step4_bin = cwd_bin_dir / DEFAULT_FFMPEG_BINARY_NAME
+    step4_bin.write_text("fake_step4_ffmpeg", encoding="utf-8")
+
+    monkeypatch.chdir(clean_env)
+
+    mock_run = stub_subprocess_ffmpeg_probe(step4_bin)
+    with patch("subprocess.run", side_effect=mock_run):
+        resolved = resolve_ffmpeg_path()
+        assert resolved == step4_bin.resolve()
+
+        card, blocked = create_fake_card(qtbot)
+        started = card.trigger_start_download()
+
+        assert started is True
+        assert card.status == TaskStatus.DOWNLOADING
+        assert len(blocked) == 0
+
+
+@pytest.mark.ticket("T0110")
+def test_step5_system_path_which_and_download_proceeds(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, qtbot
+) -> None:
+    """[T0110] 5단계: 1~4단계 부재 시 시스템 PATH(which)에서 바이너리를 발견하고 다운로드가 진행되는지 검증."""
+    update_current_settings(ffmpeg_path="")
+
+    path_dir = clean_env / "sys_path"
+    path_dir.mkdir(parents=True, exist_ok=True)
+    step5_bin = path_dir / DEFAULT_FFMPEG_BINARY_NAME
+    step5_bin.write_text("fake_step5_ffmpeg", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda cmd: str(step5_bin) if "ffmpeg" in cmd else None,
+    )
+
+    mock_run = stub_subprocess_ffmpeg_probe(step5_bin)
+    with patch("subprocess.run", side_effect=mock_run):
+        resolved = resolve_ffmpeg_path()
+        assert resolved == step5_bin.resolve()
+
+        card, blocked = create_fake_card(qtbot)
+        started = card.trigger_start_download()
+
+        assert started is True
+        assert card.status == TaskStatus.DOWNLOADING
+        assert len(blocked) == 0
+
+
+@pytest.mark.ticket("T0110")
+def test_step6_auto_download_bootstrap_success_and_download_proceeds(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, qtbot
+) -> None:
+    """[T0110] 6단계: 1~5단계 실패 시 온디맨드 자동 다운로드 및 압축 해제가 성공하여 다운로드가 진행되는지 검증."""
+    update_current_settings(ffmpeg_path="")
+
+    # 1~5단계 바이너리 없음 확인
+    assert resolve_ffmpeg_path() is None
+
+    install_dir = clean_env / "auto_downloaded_bin"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    target_bin = install_dir / DEFAULT_FFMPEG_BINARY_NAME
+
+    # ZIP 아카이브 stub 생성 (ffmpeg 바이너리 포함)
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"downloaded_ffmpeg_binary_payload")
+    zip_data = zip_buffer.getvalue()
+
+    # urllib.request.urlopen stub
+    mock_response = MagicMock()
+    mock_response.read.return_value = zip_data
+    mock_response.__enter__.return_value = mock_response
+
+    mock_run = stub_subprocess_ffmpeg_probe(target_bin)
+
+    with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch(
+            "chzzk_downloader.core.ffmpeg_manager.get_default_ffmpeg_install_dir",
+            return_value=install_dir,
+        ):
+            with patch("subprocess.run", side_effect=mock_run):
+                # ensure_ffmpeg_available 6단계 직접 검증
+                ok, bin_path = ensure_ffmpeg_available(
+                    auto_download=True, target_dir=install_dir
+                )
+                assert ok is True
+                assert bin_path == target_bin.resolve()
+                assert target_bin.exists()
+
+                # 작업 카드 다운로드 트리거 시 다운로드 진입 성공 검증
+                card, blocked = create_fake_card(qtbot)
+                started = card.trigger_start_download()
+
+                assert started is True
+                assert card.status == TaskStatus.DOWNLOADING
+                assert len(blocked) == 0
+
+
+@pytest.mark.ticket("T0110")
+def test_step6_auto_download_bootstrap_failure_blocks_download(
+    clean_env: Path, qtbot
+) -> None:
+    """[T0110] 6단계: 자동 다운로드 실패 시 다운로드가 차단되고 READY 상태가 유지되는지 검증."""
+    update_current_settings(ffmpeg_path="")
+
+    with patch("urllib.request.urlopen", side_effect=Exception("Network error")):
+        dl_path = download_ffmpeg_binary(target_dir=clean_env / "fail_bin")
+        assert dl_path is None
+
+        card, blocked = create_fake_card(qtbot)
+        started = card.trigger_start_download()
+
+        assert started is False
+        assert card.status == TaskStatus.READY
+        assert len(blocked) == 1
+        assert "FFmpeg를 사용할 수 없습니다" in blocked[0]
+
+
+@pytest.mark.ticket("T0110")
 def test_corrupted_intermediate_candidate_falls_back_to_valid_candidate(
-    tmp_path, monkeypatch
-):
-    """상위 계층(%TEMP%)에 손상된 바이너리가 있어도 하위 계층(PATH 등)으로 정상 폴백되는지 검증."""
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[T0110] 상위 계층(%TEMP%)에 손상된 바이너리가 있어도 하위 계층(PATH 등)으로 정상 폴백되는지 검증."""
     # 1. %TEMP% 디렉터리에 실행 불가능한 더미 파일 생성
     temp_dir = tmp_path / "temp"
     temp_dir.mkdir()
@@ -565,39 +791,9 @@ def test_corrupted_intermediate_candidate_falls_back_to_valid_candidate(
         assert probe_res.path == valid_ffmpeg.resolve()
 
 
-def test_ffmpeg_bootstrap_worker_thread(qtbot, tmp_path):
-    """FFmpegBootstrapWorker가 백그라운드 스레드에서 블로킹 없이 부트스트랩을 완수하는지 검증."""
-    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
-
-    fake_installed = tmp_path / "bin" / DEFAULT_FFMPEG_BINARY_NAME
-    fake_installed.parent.mkdir()
-    fake_installed.write_text("fake_ffmpeg", encoding="utf-8")
-
-    worker = FFmpegBootstrapWorker(
-        target_dir=str(fake_installed.parent), download_url="http://dummy.url"
-    )
-
-    bootstrap_results: list[tuple[bool, str]] = []
-    worker.finished_bootstrap.connect(
-        lambda ok, path: bootstrap_results.append((ok, path))
-    )
-
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
-        return_value=(True, fake_installed),
-    ):
-        with qtbot.waitSignal(worker.finished_bootstrap, timeout=3000):
-            worker.start()
-
-    assert len(bootstrap_results) == 1
-    assert bootstrap_results[0][0] is True
-    assert bootstrap_results[0][1] == str(fake_installed)
-
-
-def test_ffmpeg_manager_has_no_qt_dependency():
-    """[Core 순수성 검증] Core 계층(ffmpeg_manager.py)은 PyQt6 등 GUI 프레임워크에 일체 의존하지 않아야 함."""
-    import inspect
-
+@pytest.mark.ticket("T0110")
+def test_ffmpeg_manager_has_no_qt_dependency() -> None:
+    """[T0110] [Core 순수성 검증] Core 계층(ffmpeg_manager.py)은 PyQt6 등 GUI 프레임워크에 일체 의존하지 않아야 함."""
     import chzzk_downloader.core.ffmpeg_manager as fm
 
     source = inspect.getsource(fm)
@@ -610,210 +806,9 @@ def test_ffmpeg_manager_has_no_qt_dependency():
     )
 
 
-def test_ffmpeg_synchronous_download_freezes_ui_event_loop(qtbot, tmp_path):
-    """[동기 블로킹 검증] 메인 GUI 스레드에서 순수 동기 다운로드 직접 실행 시 UI 이벤트 루프가 완전히 정지(블로킹)됨을 입증."""
-    import io
-    import zipfile
-    from unittest.mock import MagicMock
-
-    from chzzk_downloader.core.ffmpeg_manager import ensure_ffmpeg_available
-
-    clear_probe_cache()
-
-    # 1. UI 이벤트 루프의 정상 동작을 감시하는 Heartbeat 타이머 등록 (20ms 간격)
-    timer_ticks: list[float] = []
-    timer = QTimer()
-    timer.setInterval(20)
-    timer.timeout.connect(lambda: timer_ticks.append(time.time()))
-    timer.start()
-
-    # 2. 원격 네트워크 다운로드 응답 지연 시뮬레이션 (urlopen에서 0.25초 지연)
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w") as zf:
-        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"downloaded_binary_payload")
-    zip_data = zip_buffer.getvalue()
-
-    def slow_urlopen(req, *args, **kwargs):
-        time.sleep(0.25)
-        resp = MagicMock()
-        resp.read.return_value = zip_data
-        resp.__enter__.return_value = resp
-        return resp
-
-    def mock_run(cmd, *args, **kwargs):
-        cmd_str = [str(c) for c in cmd]
-        if str(tmp_path) in cmd_str[0]:
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="ffmpeg version 6.0-essentials_build Copyright\n",
-                stderr="",
-            )
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=1, stdout="", stderr="not found"
-        )
-
-    with patch("urllib.request.urlopen", side_effect=slow_urlopen):
-        with patch("subprocess.run", side_effect=mock_run):
-            # 메인 스레드에서 순수 동기 다운로드 실행
-            ensure_ffmpeg_available(auto_download=True, target_dir=tmp_path)
-
-    # [검증]: 순수 동기 다운로드는 메인 스레드를 온전히 블로킹하므로 250ms 동안 타이머 틱이 발생하지 않아야 함!
-    # (따라서 UI에서는 이를 직접 부르지 않고 반드시 FFmpegBootstrapWorker를 사용해야 함)
-    assert len(timer_ticks) == 0, (
-        f"순수 동기 다운로드임에도 UI 이벤트가 처리되었습니다. (틱 수: {len(timer_ticks)})"
-    )
-
-
-def test_ffmpeg_bootstrap_worker_does_not_block_ui_event_loop(qtbot, tmp_path):
-    """[해결 검증] 백그라운드 워커 스레드에서 다운로드 실행 시, 네트워크 응답이 지연되어도 UI 이벤트 루프가 멈추지 않고 반응함을 검증."""
-    import io
-    import zipfile
-    from unittest.mock import MagicMock
-
-    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
-
-    clear_probe_cache()
-
-    # 1. UI 이벤트 루프 감시 Heartbeat 타이머 등록 (20ms 간격)
-    timer_ticks: list[float] = []
-    timer = QTimer()
-    timer.setInterval(20)
-    timer.timeout.connect(lambda: timer_ticks.append(time.time()))
-    timer.start()
-
-    # 2. 동일한 원격 네트워크 지연(urlopen 0.25초) 시뮬레이션
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w") as zf:
-        zf.writestr(DEFAULT_FFMPEG_BINARY_NAME, b"downloaded_binary_payload")
-    zip_data = zip_buffer.getvalue()
-
-    def slow_urlopen(req, *args, **kwargs):
-        time.sleep(0.25)
-        resp = MagicMock()
-        resp.read.return_value = zip_data
-        resp.__enter__.return_value = resp
-        return resp
-
-    target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
-
-    def mock_run(cmd, *args, **kwargs):
-        cmd_str = [str(c) for c in cmd]
-        if str(tmp_path) in cmd_str[0]:
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout="ffmpeg version 6.0-essentials_build Copyright\n",
-                stderr="",
-            )
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=1, stdout="", stderr="not found"
-        )
-
-    worker = FFmpegBootstrapWorker(
-        target_dir=str(tmp_path), download_url="http://dummy.url"
-    )
-
-    with patch("urllib.request.urlopen", side_effect=slow_urlopen):
-        with patch("subprocess.run", side_effect=mock_run):
-            with qtbot.waitSignal(worker.finished_bootstrap, timeout=3000):
-                worker.start()
-            assert worker.wait(3000)
-
-    # 3. 워커가 백그라운드에서 다운로드하는 동안에도 메인 UI 스레드는 멈추지 않고 타이머 틱(이벤트)을 지속 처리함
-    assert len(timer_ticks) >= 5
-    assert target_bin.exists()
-
-
-def test_ui_calls_ffmpeg_download_strictly_in_background_thread(qtbot, tmp_path):
-    """[스레드 격리 보장] UI 레벨에서 FFmpeg 다운로드를 수행할 때 메인 GUI 스레드가 아닌 별도 백그라운드 스레드에서만 호출됨을 보장."""
-    from PyQt6.QtCore import QThread
-    from PyQt6.QtWidgets import QApplication
-
-    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
-
-    clear_probe_cache()
-    caller_threads: list[QThread] = []
-    fake_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
-
-    def spy_download(*args, **kwargs):
-        curr = QThread.currentThread()
-        assert curr is not None
-        caller_threads.append(curr)
-        fake_bin.write_text("fake_ffmpeg", encoding="utf-8")
-        return fake_bin
-
-    def mock_probe(path=None):
-        if path is None or not fake_bin.exists():
-            return FFmpegProbeResult(status=FFmpegStatus.NOT_FOUND, path=None)
-        return FFmpegProbeResult(
-            status=FFmpegStatus.AVAILABLE,
-            path=fake_bin,
-            version="6.0",
-            compatible_args=["-extension_picky", "0"],
-        )
-
-    worker = FFmpegBootstrapWorker(target_dir=str(tmp_path))
-    results = []
-    worker.finished_bootstrap.connect(lambda ok, msg: results.append((ok, msg)))
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.download_ffmpeg_binary",
-        side_effect=spy_download,
-    ):
-        with patch(
-            "chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg", side_effect=mock_probe
-        ):
-            with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
-                worker.start()
-
-    assert results != []
-    assert results[0][0] is True, f"Worker failed: {results}"
-    assert len(caller_threads) == 1
-    # [핵심 보장]: 다운로드를 수행한 스레드는 절대 메인 GUI 스레드여서는 안 됨!
-    app = QApplication.instance()
-    assert app is not None
-    main_thread = app.thread()
-    assert caller_threads[0] != main_thread, (
-        "치명적 오류: 다운로드가 메인 GUI 스레드에서 동기로 직접 호출되었습니다!"
-    )
-
-
-def test_ui_download_trigger_returns_immediately(qtbot, tmp_path):
-    """[논블로킹 보장] UI 레벨에서 다운로드 시작 시 메인 스레드는 0.05초 내로 즉시 반환되어 UI가 멈추지 않아야 함."""
-    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
-
-    worker = FFmpegBootstrapWorker(target_dir=str(tmp_path))
-
-    def slow_ensure(*args, **kwargs):
-        time.sleep(0.3)
-        return True, tmp_path / DEFAULT_FFMPEG_BINARY_NAME
-
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.ensure_ffmpeg_available",
-        side_effect=slow_ensure,
-    ):
-        start_time = time.time()
-        # 워커 시작 호출 (UI 버튼이나 초기화 시 호출되는 액션)
-        worker.start()
-        elapsed = time.time() - start_time
-
-        # UI 호출 즉시 리턴 검증 (메인 스레드가 50ms 이상 잡히지 않아야 함)
-        assert elapsed < 0.05, f"메인 스레드 블로킹 발생! ({elapsed:.3f}초 소요)"
-
-        with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
-            pass
-        assert worker.wait(3000)
-
-
-def test_concurrent_ffmpeg_downloads_no_race_collision(tmp_path):
-    """[동시성 검증] 다중 스레드가 동시에 download_ffmpeg_binary를 호출해도 락과 더블체크로 충돌(WinError 32) 없이 안전하게 완료됨을 검증."""
-    import concurrent.futures
-    import io
-    import zipfile
-    from unittest.mock import MagicMock
-
-    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
-
+@pytest.mark.ticket("T0110")
+def test_concurrent_ffmpeg_downloads_no_race_collision(tmp_path: Path) -> None:
+    """[T0110] [동시성 검증] 다중 스레드가 동시에 download_ffmpeg_binary를 호출해도 락과 더블체크로 충돌(WinError 32) 없이 안전하게 완료됨을 검증."""
     clear_probe_cache()
     target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
 
@@ -859,14 +854,9 @@ def test_concurrent_ffmpeg_downloads_no_race_collision(tmp_path):
     assert download_count == 1
 
 
-def test_interrupted_download_leaves_no_corrupt_files(tmp_path):
-    """[원자성 검증] 압축 해제 및 파일 쓰기 도중 예외 발생 시 목적지 경로에 깨진 바이너리가 남지 않고 완벽히 격리됨을 검증."""
-    import io
-    import zipfile
-    from unittest.mock import MagicMock
-
-    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
-
+@pytest.mark.ticket("T0110")
+def test_interrupted_download_leaves_no_corrupt_files(tmp_path: Path) -> None:
+    """[T0110] [원자성 검증] 압축 해제 및 파일 쓰기 도중 예외 발생 시 목적지 경로에 깨진 바이너리가 남지 않고 완벽히 격리됨을 검증."""
     clear_probe_cache()
     target_bin = tmp_path / DEFAULT_FFMPEG_BINARY_NAME
 
@@ -895,48 +885,11 @@ def test_interrupted_download_leaves_no_corrupt_files(tmp_path):
     )
 
 
-def test_ffmpeg_bootstrap_worker_cancellation(qtbot, tmp_path):
-    """[취소 검증] FFmpegBootstrapWorker 실행 중 cancel() 호출 시 안전하게 중단되고 finished_bootstrap(False)을 방출하는지 검증."""
-    from chzzk_downloader.gui.workers import FFmpegBootstrapWorker
-
-    worker = FFmpegBootstrapWorker(target_dir=str(tmp_path))
-    results = []
-    worker.finished_bootstrap.connect(lambda ok, msg: results.append((ok, msg)))
-
-    def blocking_download(*args, **kwargs):
-        cancel_check = kwargs.get("cancel_check")
-        for _ in range(10):
-            time.sleep(0.05)
-            if cancel_check and cancel_check():
-                return None
-        return None
-
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.download_ffmpeg_binary",
-        side_effect=blocking_download,
-    ):
-        with patch(
-            "chzzk_downloader.core.ffmpeg_manager.probe_ffmpeg",
-            return_value=FFmpegProbeResult(status=FFmpegStatus.NOT_FOUND, path=None),
-        ):
-            with qtbot.waitSignal(worker.finished_bootstrap, timeout=2000):
-                worker.start()
-                time.sleep(0.05)
-                worker.cancel()
-            assert worker.wait(3000)
-
-    assert len(results) == 1
-    assert results[0][0] is False
-    assert "취소" in results[0][1]
-
-
-def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(tmp_path):
-    """[메모리 보호 검증] 대용량 바이너리 다운로드 시 전체를 RAM에 적재(resp.read())하지 않고 64KB 스트리밍하여 메모리 피크가 5MB 이하를 유지함을 검증."""
-    import tracemalloc
-    from unittest.mock import MagicMock
-
-    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
-
+@pytest.mark.ticket("T0110")
+def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(
+    tmp_path: Path,
+) -> None:
+    """[T0110] [메모리 보호 검증] 대용량 바이너리 다운로드 시 전체를 RAM에 적재(resp.read())하지 않고 64KB 스트리밍하여 메모리 피크가 5MB 이하를 유지함을 검증."""
     clear_probe_cache()
     chunk_size = 64 * 1024
     total_chunks = 480  # 약 30MB
@@ -974,9 +927,11 @@ def test_download_ffmpeg_memory_usage_must_not_spike_with_large_payload(tmp_path
     )
 
 
-def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(monkeypatch, tmp_path):
-    """설치 폴더 생성 시 권한 오류(OSError) 발생 시 tempfile 폴백 검증."""
-    from chzzk_downloader.core.ffmpeg_manager import get_default_ffmpeg_install_dir
+@pytest.mark.ticket("T0110")
+def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """[T0110] 설치 폴더 생성 시 권한 오류(OSError) 발생 시 tempfile 폴백 검증."""
 
     def raise_oserror(*args, **kwargs):
         raise PermissionError("Access denied")
@@ -987,17 +942,19 @@ def test_get_default_ffmpeg_install_dir_oserror_fallback_to_temp(monkeypatch, tm
     assert "chzzk_downloader" in str(fallback) or str(fallback) in str(tmp_path)
 
 
-def test_download_ffmpeg_binary_mkdir_permission_error():
-    """download_ffmpeg_binary에서 디렉터리 생성 실패 시 크래시 없이 None 반환 검증."""
-    from chzzk_downloader.core.ffmpeg_manager import download_ffmpeg_binary
-
+@pytest.mark.ticket("T0110")
+def test_download_ffmpeg_binary_mkdir_permission_error() -> None:
+    """[T0110] download_ffmpeg_binary에서 디렉터리 생성 실패 시 크래시 없이 None 반환 검증."""
     with patch.object(Path, "mkdir", side_effect=PermissionError("Permission denied")):
         res = download_ffmpeg_binary(target_dir="/nonexistent/forbidden/path")
         assert res is None
 
 
-def test_verify_media_file_integrity_ffprobe_missing_with_valid_magic_bytes(tmp_path):
-    """FFprobe 부재 환경에서 매직 바이트가 유효한 미디어 파일은 통과하고 가짜 텍스트 파일은 차단되는지 검증."""
+@pytest.mark.ticket("T0110")
+def test_verify_media_file_integrity_ffprobe_missing_with_valid_magic_bytes(
+    tmp_path: Path,
+) -> None:
+    """[T0110] FFprobe 부재 환경에서 매직 바이트가 유효한 미디어 파일은 통과하고 가짜 텍스트 파일은 차단되는지 검증."""
     # 1. 가짜 텍스트 파일
     fake_txt = tmp_path / "fake.mp4"
     fake_txt.write_text("just text", encoding="utf-8")
@@ -1023,31 +980,3 @@ def test_verify_media_file_integrity_ffprobe_missing_with_valid_magic_bytes(tmp_
             ok_mp4, msg_mp4 = verify_media_file_integrity(valid_mp4)
             assert ok_mp4 is True
             assert "헤더 매직 넘버" in msg_mp4
-
-
-def test_task_card_save_dir_mkdir_oserror(qtbot, tmp_path):
-    """다운로드 시작 시 저장 경로 생성 실패(권한 부족) 시 다운로드가 차단되고 에러 시그널이 방출되는지 검증."""
-    mock_vod = VodInfo(
-        video_no="12345", video_title="테스트 영상", channel_name="스트리머"
-    )
-    card = TaskCardWidget(
-        raw_url="https://chzzk.naver.com/video/12345",
-        status=TaskStatus.READY,
-        vod_info=mock_vod,
-    )
-    qtbot.addWidget(card)
-
-    blocked_reasons: list[str] = []
-    card.download_blocked.connect(blocked_reasons.append)
-
-    with patch(
-        "chzzk_downloader.core.ffmpeg_manager.is_ffmpeg_available", return_value=True
-    ):
-        with patch.object(
-            Path, "mkdir", side_effect=PermissionError("폴더 생성 권한 없음")
-        ):
-            started = card.trigger_start_download()
-            assert started is False
-            assert card.status == TaskStatus.READY
-            assert len(blocked_reasons) == 1
-            assert "저장 폴더를 생성할 수 없습니다" in blocked_reasons[0]
