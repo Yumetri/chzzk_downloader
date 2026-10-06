@@ -1520,10 +1520,17 @@ class TestSectionEdgeCases:
         worker.probed.connect(_spy_on_media_probed)
         worker.start()
 
+        import time
+
         qtbot.waitUntil(lambda: worker.isRunning(), timeout=1000)
 
         # 카드 닫기 (메인 스레드 블로킹 없이 즉시 반환)
+        start_time = time.monotonic()
         card.close()
+        elapsed = time.monotonic() - start_time
+        assert elapsed < 0.2, (
+            f"close() 호출 시 UI 스레드가 {elapsed:.2f}초 동안 동기 블로킹되었습니다."
+        )
 
         # 분리 보관 집합에 등록되었는지 확인
         assert worker in _DETACHED_PROBE_WORKERS
@@ -1539,6 +1546,160 @@ class TestSectionEdgeCases:
 
         # 닫힌 카드의 콜백은 시그널 해제로 인해 실행되지 않아야 함
         assert not callback_called
+
+    def test_subprocess_tracker_thread_isolation(self) -> None:
+        """다중 스레드 동시 실행 시 _SubprocessTracker가 서로의 Popen 추적을 간섭하거나 유실하지 않는지 검증."""
+        import subprocess
+        import sys
+        import threading
+
+        from chzzk_downloader.gui.workers import _SubprocessTracker
+
+        set_a: set = set()
+        set_b: set = set()
+
+        thread_b_started = threading.Event()
+        thread_a_done = threading.Event()
+        proc_b_ref: list[Any] = []
+
+        def run_thread_a() -> None:
+            with _SubprocessTracker(set_a):
+                thread_b_started.wait(timeout=2.0)
+                # Thread A 먼저 정상 탈출
+
+        def run_thread_b() -> None:
+            with _SubprocessTracker(set_b):
+                thread_b_started.set()
+                thread_a_done.wait(timeout=2.0)
+                # Thread A가 나간 후 Thread B에서 프로세스 기동
+                proc = subprocess.Popen([sys.executable, "-c", "pass"])
+                proc.wait()
+                proc_b_ref.append(proc)
+
+        t_a = threading.Thread(target=run_thread_a)
+        t_b = threading.Thread(target=run_thread_b)
+
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=3.0)
+        thread_a_done.set()
+        t_b.join(timeout=3.0)
+
+        assert len(proc_b_ref) == 1
+        proc_b = proc_b_ref[0]
+        assert proc_b in set_b, (
+            "Thread A 퇴출로 인해 Thread B의 서브프로세스 추적이 유실되었습니다."
+        )
+        assert proc_b not in set_a, (
+            "Thread B의 서브프로세스가 Thread A에 잘못 오염 등록되었습니다."
+        )
+
+    def test_reset_for_redownload_detaches_previous_probe_worker(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """재다운로드 리셋 시 실행 중인 이전 프로빙 워커가 안전하게 분리되고 UI를 오염시키지 않는지 검증."""
+        import threading
+
+        from chzzk_downloader.gui.task_card import (
+            _DETACHED_PROBE_WORKERS,
+            TaskCardWidget,
+        )
+        from chzzk_downloader.gui.workers import MediaProbeWorker
+
+        fake_file = tmp_path / "probe_reuse.mp4"
+        fake_file.write_bytes(b"data" * 512)
+
+        card = TaskCardWidget("https://chzzk.naver.com/video/v_reuse")
+        qtbot.addWidget(card)
+
+        release_event = threading.Event()
+
+        class SlowWorker(MediaProbeWorker):
+            def run(self) -> None:
+                release_event.wait(timeout=2.0)
+                super().run()
+
+        worker = SlowWorker("v_reuse", fake_file)
+        card.attach_probe_worker(worker)
+        worker.start()
+
+        qtbot.waitUntil(lambda: worker.isRunning(), timeout=1000)
+
+        # 재다운로드 승인으로 인한 카드 리셋
+        card.reset_for_redownload()
+
+        # 분리 보관 집합으로 위임되었는지 검증
+        assert worker in _DETACHED_PROBE_WORKERS
+
+        release_event.set()
+        qtbot.waitUntil(
+            lambda: worker not in _DETACHED_PROBE_WORKERS,
+            timeout=3000,
+        )
+
+    def test_detach_probe_worker_handles_already_finished_thread(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """워커가 이미 종료된 상태에서 detach 호출 시 _DETACHED_PROBE_WORKERS에 영구 고립되지 않는지 검증."""
+        from chzzk_downloader.gui.task_card import (
+            _DETACHED_PROBE_WORKERS,
+            TaskCardWidget,
+        )
+        from chzzk_downloader.gui.workers import MediaProbeWorker
+
+        fake_file = tmp_path / "probe_done.mp4"
+        fake_file.write_bytes(b"data" * 512)
+
+        card = TaskCardWidget("https://chzzk.naver.com/video/v_finished")
+        qtbot.addWidget(card)
+
+        worker = MediaProbeWorker("v_finished", fake_file)
+        card.attach_probe_worker(worker)
+        worker.start()
+        qtbot.waitUntil(lambda: worker.isFinished(), timeout=2000)
+
+        # 이미 종료된 상태에서 카드 닫기/분리 호출
+        card.close()
+
+        # 이미 끝난 워커는 분리 집합에 영구 잔존하지 않아야 함
+        assert worker not in _DETACHED_PROBE_WORKERS
+
+    def test_main_window_close_event_waits_for_detached_probe_workers(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """메인 윈도우 종료 시 _DETACHED_PROBE_WORKERS에 잔류한 비동기 워커가 안전하게 대기 및 정리되는지 검증."""
+        import threading
+
+        from PyQt6.QtGui import QCloseEvent
+
+        from chzzk_downloader.gui.main_window import MainWindow
+        from chzzk_downloader.gui.task_card import _DETACHED_PROBE_WORKERS
+        from chzzk_downloader.gui.workers import MediaProbeWorker
+
+        win = MainWindow()
+        qtbot.addWidget(win)
+
+        fake_file = tmp_path / "probe_hang.mp4"
+        fake_file.write_bytes(b"data" * 512)
+
+        release = threading.Event()
+
+        class HangWorker(MediaProbeWorker):
+            def run(self) -> None:
+                release.wait(timeout=2.0)
+                super().run()
+
+        worker = HangWorker("hang-task", fake_file)
+        _DETACHED_PROBE_WORKERS.add(worker)
+        worker.start()
+
+        # 워커 재개 및 메인 윈도우 종료 이벤트 처리
+        release.set()
+        win.closeEvent(QCloseEvent())
+
+        # closeEvent 종료 후 _DETACHED_PROBE_WORKERS가 비워지고 워커가 실행 중이 아니어야 함
+        assert len(_DETACHED_PROBE_WORKERS) == 0
+        assert not worker.isRunning()
 
     def test_subprocess_tracker_enforces_utf8_and_replace_on_text_pipes(
         self, monkeypatch: Any

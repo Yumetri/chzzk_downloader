@@ -1153,6 +1153,8 @@ class TaskCardWidget(QFrame):
                     lambda ref=worker: _DETACHED_PROBE_WORKERS.discard(ref)
                 )
                 worker.finished.connect(worker.deleteLater)
+                if worker.isFinished():
+                    _DETACHED_PROBE_WORKERS.discard(worker)
 
     def attach_probe_worker(self, worker: Any) -> None:
         """비동기 미디어 프로빙 워커를 카드에 등록합니다."""
@@ -1803,6 +1805,8 @@ class TaskCardWidget(QFrame):
 
     def reset_for_redownload(self) -> None:
         """동일 VOD 재입력 시 이전 세션 리소스 정리 및 클린 리셋 (충돌 방어 및 최신 설정 반영)."""
+        self._detach_thumb_loader()
+        self._detach_probe_worker()
         self.error_message = ""
         self.error_type = ""
         self.traceback_str = ""

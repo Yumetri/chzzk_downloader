@@ -341,6 +341,22 @@ class MainWindow(QMainWindow):
                     card._info_win.close()
                 card._info_win = None
 
+        # 분리 보관 중인 보조 워커(미디어 프로빙/썸네일) 안전 대기
+        from chzzk_downloader.gui.task_card import (
+            _DETACHED_LOADERS,
+            _DETACHED_PROBE_WORKERS,
+        )
+
+        for probe_w in list(_DETACHED_PROBE_WORKERS):
+            if probe_w.isRunning():
+                probe_w.wait(1000)
+        _DETACHED_PROBE_WORKERS.clear()
+
+        for loader in list(_DETACHED_LOADERS):
+            if loader.isRunning():
+                loader.wait(1000)
+        _DETACHED_LOADERS.clear()
+
         super().closeEvent(event)
 
     def _check_cookie_session_on_startup(self) -> None:

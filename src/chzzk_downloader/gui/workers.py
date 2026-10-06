@@ -1,6 +1,7 @@
 import glob
 import logging
 import subprocess
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -25,32 +26,52 @@ from chzzk_downloader.gui.section_poller import (
 logger = logging.getLogger(__name__)
 
 
+class _TrackerLocal(threading.local):
+    def __init__(self) -> None:
+        self.target_sets: list[set[Any]] = []
+
+
+_local_tracker = _TrackerLocal()
+_popen_lock = threading.Lock()
+_active_tracker_count = 0
+_orig_popen_init = subprocess.Popen.__init__
+
+
+def _tracked_popen_init(self_proc: subprocess.Popen, *args: Any, **kwargs: Any) -> None:
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+    _orig_popen_init(self_proc, *args, **kwargs)
+    for target in _local_tracker.target_sets:
+        target.add(self_proc)
+
+
 class _SubprocessTracker:
-    """yt-dlp 실행 중 기동되는 서브프로세스를 추적 풀에 등록하는 컨텍스트 관리자."""
+    """yt-dlp 실행 중 기동되는 서브프로세스를 스레드별 격리 풀에 등록하는 컨텍스트 관리자."""
 
     def __init__(self, target_set: set[Any]) -> None:
         self.target_set = target_set
-        self.original_init = subprocess.Popen.__init__
 
     def __enter__(self) -> None:
-        orig_init = self.original_init
-        target = self.target_set
-
-        def tracked_init(
-            self_proc: subprocess.Popen, *args: Any, **kwargs: Any
-        ) -> None:
-            if kwargs.get("text") or kwargs.get("universal_newlines"):
-                if "encoding" not in kwargs or kwargs["encoding"] is None:
-                    kwargs["encoding"] = "utf-8"
-                if "errors" not in kwargs or kwargs["errors"] is None:
-                    kwargs["errors"] = "replace"
-            orig_init(self_proc, *args, **kwargs)
-            target.add(self_proc)
-
-        subprocess.Popen.__init__ = tracked_init  # type: ignore[method-assign]
+        global _active_tracker_count, _orig_popen_init
+        _local_tracker.target_sets.append(self.target_set)
+        with _popen_lock:
+            if _active_tracker_count == 0:
+                current_init = subprocess.Popen.__init__
+                if current_init is not _tracked_popen_init:
+                    _orig_popen_init = current_init
+                subprocess.Popen.__init__ = _tracked_popen_init  # type: ignore[method-assign]
+            _active_tracker_count += 1
 
     def __exit__(self, *exc_info: Any) -> None:
-        subprocess.Popen.__init__ = self.original_init  # type: ignore[method-assign]
+        global _active_tracker_count
+        if self.target_set in _local_tracker.target_sets:
+            _local_tracker.target_sets.remove(self.target_set)
+        with _popen_lock:
+            _active_tracker_count -= 1
+            if _active_tracker_count <= 0:
+                _active_tracker_count = 0
+                subprocess.Popen.__init__ = _orig_popen_init  # type: ignore[method-assign]
 
 
 class DownloadCancelledError(Exception):
@@ -77,9 +98,7 @@ class VodCheckWorker(QThread):
         try:
             info = extract_vod_info(url)
             self.finished_success.emit(info)
-        except VodNotFoundError as e:
-            self.finished_failed.emit(str(e))
-        except YtDlpError as e:
+        except (VodNotFoundError, YtDlpError) as e:
             self.finished_failed.emit(str(e))
         except Exception as e:
             self.finished_failed.emit(f"예기치 못한 오류: {e}")
@@ -333,15 +352,11 @@ class VodDownloadWorker(QThread):
 
             final_path = self._resolve_final_path(Path(self.task_spec.save_path))
             if not final_path.exists():
-                raise FileNotFoundError(
-                    f"다운로드 대상 파일이 디스크에 생성되지 않았습니다: {final_path}"
-                )
+                raise FileNotFoundError(f"다운로드 파일 미생성: {final_path}")
 
             if final_path.stat().st_size <= 0:
                 final_path.unlink(missing_ok=True)
-                raise ValueError(
-                    f"다운로드된 파일의 크기가 0바이트(빈 파일)입니다: {final_path}"
-                )
+                raise ValueError(f"다운로드 파일 0바이트: {final_path}")
 
             self.download_finished.emit(self.task_id, str(final_path))
 
