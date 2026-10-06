@@ -90,8 +90,8 @@ GUI 스레드에서 `subprocess.*`, `urlopen`, `mkdir`, `stat`, `exists`, FFmpeg
 | **P4** | **Adversarial Audit** | **에이전트 자발적 서브에이전트 가동** ➔ 엣지 케이스 감사 ➔ 경계값 TDD 보강 | 감사 리포트 & 보강 테스트 |
 | **P5** | **4대 기계 검증** | `ruff`, `pyrefly`, `check_rules.py`, `pytest` 전수 실행 ➔ 0 error 통과 | 4대 검증 로그 |
 | **P6** | **Handoff & Report** | 아키텍처 변경 시 `reports/*.html` 생성 ➔ `AGENT_WORKFLOW.md` §3 6대 Handoff 양식 출력 | HTML 보고서, Handoff |
-| **P7** | **Ship** | 사용자 최종 승인 ➔ Git 커밋, 데스크톱 동기화(`desktop-sync`), 푸시/PR | Git 커밋 & PR |
+| **P7** | **Ship** | 사용자 최종 승인 ➔ Git 커밋, 데스크톱 동기화(`desktop-sync`, 규칙·문서 갱신 시 작업 공간 상호 업데이트 필수), 푸시/PR | Git 커밋 & PR |
 
+- **규칙 및 문서 동기화 원칙**: 작업 완료 시 규칙(`AGENTS.md`) 및 관련 문서(`docs/`)의 갱신이 있었을 경우, 데스크톱(`Desktop/chzzk_downloader`)과 작업 공간(`Desktop/code_training/chzzk_downloader`) 양쪽에 빠짐없이 상호 업데이트하여 항상 동일한 최신 기준을 유지한다.
 - **UI 카탈로그 4자 동기화**: UI 피드백(모달 M, 토스트 T, 작업 카드 C) 추가·수정 시 `docs/UI_FEEDBACK_CATALOG.md` (SSOT), `feedback_showcase.py`, `tools/preview_ui_feedbacks.py`, `tests/test_ui_feedback_catalog.py`의 4자 일괄 동기화를 엄격히 준수한다.
 - **기계 검증 가드**: 상태 전이 및 완료 검증은 `tools/check_workflow.py`로 기계적으로 확인한다.
-

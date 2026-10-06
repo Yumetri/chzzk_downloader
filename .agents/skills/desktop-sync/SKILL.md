@@ -18,10 +18,14 @@ description: Use when the user asks to sync codebase changes (src, docs, tools, 
 
 ## 2. 에이전트 실행 절차
 
-사용자가 "데스크톱 동기화해줘", "바탕화면 복사해줘", "desktop-sync 실행" 등을 요청하면 아래 명령을 단독 실행합니다:
+사용자가 "데스크톱 동기화해줘", "바탕화면 복사해줘", "desktop-sync 실행" 등을 요청하면 아래 명령을 실행합니다:
 
 ```bash
+# 기본: 워크스페이스 -> 데스크톱 동기화
 uv run --no-sync python .agents/skills/desktop-sync/scripts/sync.py
+
+# 데스크톱 -> 워크스페이스 동기화 (데스크톱 규칙/문서 가져오기)
+uv run --no-sync python .agents/skills/desktop-sync/scripts/sync.py --pull
 ```
 
 ## 3. 동기화 후 검증
