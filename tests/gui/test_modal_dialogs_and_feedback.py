@@ -113,14 +113,7 @@ def test_toast_catalog_types_and_appearance(qtbot) -> None:
     assert toast.isHidden() is False
     assert "https://chzzk.naver.com/video/15016450" in toast.label.text()
 
-    # T02: 쿠키 재분석 안내 토스트 (SUCCESS)
-    toast.show_toast(
-        "쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다.", ToastType.SUCCESS
-    )
-    assert toast.isHidden() is False
-    assert "쿠키가 등록되어 로그인 필요 작업을 다시 분석합니다." in toast.label.text()
-
-    # T03: 진행중 중복 거부 토스트 (WARNING, ⚠️ 아이콘)
+    # T02: 진행중 중복 거부 토스트 (WARNING, ⚠️ 아이콘)
     toast.show_toast(
         '<span style="color: #f59e0b;">⚠️</span> 이미 추가한 작업입니다.',
         ToastType.WARNING,
@@ -129,7 +122,7 @@ def test_toast_catalog_types_and_appearance(qtbot) -> None:
     assert "이미 추가한 작업입니다." in toast.label.text()
     assert "⚠️" in toast.label.text()
 
-    # T06: 만료 경고 액션 토스트 (쿠키를 갱신하세요, 🍪/N 아이콘 버튼 및 툴팁)
+    # T05: 만료 경고 액션 토스트 (쿠키를 갱신하세요, 🍪/N 아이콘 버튼 및 툴팁)
     toast.show_action_toast(
         "쿠키를 갱신하세요",
         buttons=[
@@ -145,7 +138,7 @@ def test_toast_catalog_types_and_appearance(qtbot) -> None:
     assert toast._action_buttons[1].text() == "N"
     assert toast._action_buttons[1].toolTip() == "네이버 로그인"
 
-    # T07: FFmpeg 미가용 경고 토스트 (WARNING, ⚠️ 아이콘)
+    # T06: FFmpeg 미가용 경고 토스트 (WARNING, ⚠️ 아이콘)
     toast.show_toast(
         '<span style="color: #f59e0b;">⚠️</span> FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요.',
         ToastType.WARNING,
@@ -153,6 +146,26 @@ def test_toast_catalog_types_and_appearance(qtbot) -> None:
     assert toast.isHidden() is False
     assert "FFmpeg를 사용할 수 없습니다" in toast.label.text()
     assert "⚠️" in toast.label.text()
+
+    # T07: 다운로드 완료 성공 알림 토스트 (초록 체크 ✓ + 파일명, 사진 3 규격)
+    msg_completed = (
+        '<span style="color: #10b981; font-weight: bold; font-size: 14px;">✓</span> '
+        '<span style="color: #ffffff;">[김나성] 김나성박이 (8STXaDJBI1).mp4</span>'
+    )
+    toast.show_toast(msg_completed, ToastType.SUCCESS, auto_dismiss_ms=2000)
+    assert toast.isHidden() is False
+    assert "✓" in toast.label.text()
+    assert "[김나성] 김나성박이 (8STXaDJBI1).mp4" in toast.label.text()
+
+    # T08: 동영상 파일 삭제 알림 토스트 (빨간 휴지통 🗑 + 파일명)
+    msg_deleted = (
+        '<span style="color: #ef4444; font-size: 14px;">🗑</span> '
+        '<span style="color: #ffffff;">[김나성] 김나성박이 (8STXaDJBI1).mp4</span>'
+    )
+    toast.show_toast(msg_deleted, ToastType.ERROR, auto_dismiss_ms=2500)
+    assert toast.isHidden() is False
+    assert "🗑" in toast.label.text()
+    assert "[김나성] 김나성박이 (8STXaDJBI1).mp4" in toast.label.text()
 
 
 def test_feedback_showcase_window_initialization(qtbot) -> None:
@@ -170,12 +183,8 @@ def test_feedback_showcase_window_initialization(qtbot) -> None:
     # 토스트 데모 슬롯 호출 시 로그 기록 검증
     window._demo_toast_add_url()
     assert "[T01] URL 추가 토스트 호출" in window.log_edit.toPlainText()
-
-    window._demo_toast_reanalyze_success()
-    assert (
-        "[T02] 쿠키 재분석 토스트는 백그라운드 자동 재분석으로 전환"
-        in window.log_edit.toPlainText()
-    )
+    window._demo_toast_file_deleted()
+    assert "[T08] 동영상 파일 삭제 토스트 호출" in window.log_edit.toPlainText()
 
 
 def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch) -> None:
@@ -185,7 +194,7 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch) -> None:
 
     captured_titles: list[str] = []
 
-    # 1) ask_confirm_dialog 검증 (M01, M02, M03)
+    # 1) ask_confirm_dialog 검증 (M01, M02, M03, M08, M10)
     def mock_ask(parent=None, text="", title="Chzzk Downloader", **kwargs):
         captured_titles.append(title)
         return True
@@ -197,8 +206,10 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch) -> None:
     window._demo_modal_stop_download()
     window._demo_modal_redownload_duplicate()
     window._demo_modal_clear_cookie()
+    window._demo_modal_external_link()
+    window._demo_modal_delete_file()
 
-    # 2) QMessageBox.information / warning 검증 (M05, M07)
+    # 2) QMessageBox.information / warning 검증 (M05, M07, M09)
     def mock_info(parent, title, text, *args, **kwargs):
         captured_titles.append(title)
 
@@ -220,7 +231,9 @@ def test_feedback_showcase_modals_use_unified_title(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(QMessageBox, "exec", mock_exec)
     window._demo_modal_file_conflict()
 
-    assert len(captured_titles) == 7
+    # 모든 모달의 창 제목이 "Chzzk Downloader"인지 검증 (총 9개 데모)
+    assert len(captured_titles) == 9
+
     for title in captured_titles:
         if sys.platform != "darwin":
             assert title == "Chzzk Downloader", f"쇼케이스 모달 타이틀 불일치: {title}"
@@ -379,3 +392,233 @@ def test_task_card_chzzk_badge_confirm_modal_and_browser(qtbot, monkeypatch) -> 
 
     assert len(opened_urls) == 1
     assert opened_urls[0] == "https://chzzk.naver.com/video/15070093"
+
+
+def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
+    """C02 호버 툴바, C03 VOD/Live 분리, C08 VOD/Live 분리 UI 규격을 정밀 검증."""
+
+    from chzzk_downloader.core.task_models import TaskProgress, TaskStatus
+    from chzzk_downloader.core.ytdlp import VodFormatInfo, VodInfo
+    from chzzk_downloader.gui.task_card import TaskCardWidget
+
+    mock_vod = VodInfo(
+        video_no="15033444",
+        video_title="[김나성] 김나성박이 (8STXaDJBI1)",
+        channel_name="김나성",
+        duration=126,
+        formats=[VodFormatInfo(format_id="1080p", height=1080, fps=60.0)],
+    )
+
+    # 0. C01 (ANALYZING) 상태 2번 위치 호버 툴바 검증: 폴더 열기 + 목록 삭제 상시 노출, 읽기 중지 버튼 제거
+    card_analyzing = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.ANALYZING,
+    )
+    qtbot.addWidget(card_analyzing)
+    card_analyzing.show()
+    card_analyzing._show_hover_toolbar(True)
+
+    assert hasattr(card_analyzing, "ready_stop_btn") is False
+    assert card_analyzing.open_folder_btn.isVisible() is True
+    assert card_analyzing.delete_btn.isVisible() is True
+    assert card_analyzing.play_btn.isHidden() is True
+    assert card_analyzing.action_delete_file_btn.isHidden() is True
+    # 썸네일 빈 화면에 텍스트 '분석 중' 대신 회색 스피너 표시 검증
+    assert card_analyzing.thumb_label.text() == ""
+    assert hasattr(card_analyzing, "thumb_spinner") is True
+    assert card_analyzing.thumb_spinner.isVisible() is True
+
+    # 1. C02 (READY) 상태 2번 위치 호버 툴바 검증: 폴더 열기 + 목록 삭제 노출
+    card_ready = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.READY,
+        vod_info=mock_vod,
+    )
+    qtbot.addWidget(card_ready)
+    card_ready.show()
+    card_ready._show_hover_toolbar(True)
+
+    assert hasattr(card_ready, "ready_stop_btn") is False
+    assert card_ready.open_folder_btn.isVisible() is True
+    assert card_ready.delete_btn.isVisible() is True
+    assert card_ready.play_btn.isHidden() is True
+    assert card_ready.action_delete_file_btn.isHidden() is True
+
+    # 2. C03-VOD 다운로드 중: 4번 위치(진행바+정수%) & 3번 위치([속도] | [남은 시간] | [⬇ 용량])
+    card_vod = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.DOWNLOADING,
+        vod_info=mock_vod,
+        is_live=False,
+    )
+    qtbot.addWidget(card_vod)
+    card_vod.show()
+
+    # 2-A. 시작 직후 (남은 시간 없음)
+    card_vod.update_progress(
+        TaskProgress(
+            task_id="15033444",
+            downloaded_bytes=10_000_000,
+            total_bytes=100_000_000,
+            percentage=10.0,
+            speed_str="5.0 MB/s",
+            eta_seconds=0,
+            eta_str="",
+        )
+    )
+    assert card_vod.vod_downloading_container.isVisible() is True
+    assert card_vod.live_recording_container.isHidden() is True
+    assert card_vod.progress_bar.isVisible() is True
+    assert card_vod.progress_bar.value() == 10
+    assert card_vod.pct_label.text() == "10%"
+    assert card_vod.vod_metrics_widget.isVisible() is True
+    assert card_vod.icon_metrics_widget.isHidden() is True
+    assert "5.0 MB/s" in card_vod.speed_label.text()
+    assert card_vod.eta_label.isHidden() is True  # ETA 미표시 시 숨김
+    assert card_vod.eta_sep_label.isHidden() is True
+    assert "⬇" in card_vod.size_label.text()
+
+    # 2-B. 남은 시간 산출 시 (속도 위치만 앞으로 이동)
+    card_vod.update_progress(
+        TaskProgress(
+            task_id="15033444",
+            downloaded_bytes=42_000_000,
+            total_bytes=100_000_000,
+            percentage=42.0,
+            speed_str="15.4 MB/s",
+            eta_seconds=125,
+            eta_str="00:02:05",
+        )
+    )
+    assert card_vod.eta_label.isVisible() is True
+    assert card_vod.eta_label.text() == "00:02:05"
+    assert card_vod.eta_sep_label.isVisible() is True
+    assert "15.4 MB/s" in card_vod.speed_label.text()
+
+    # 3. C03-Live 라이브 녹화 중: 4번 위치([Z] [📺▶] 녹화 중... [■]) & 3번 위치(🕒 시간   ⬇ 용량, 속도 제외)
+    card_live = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/live/streamer",
+        status=TaskStatus.DOWNLOADING,
+        vod_info=mock_vod,
+        is_live=True,
+    )
+    qtbot.addWidget(card_live)
+    card_live.show()
+    card_live.update_progress(
+        TaskProgress(
+            task_id="live1",
+            downloaded_bytes=int(19.9 * 1024 * 1024),
+            elapsed_seconds=11.0,
+        )
+    )
+    assert card_live.vod_downloading_container.isHidden() is True
+    assert card_live.live_recording_container.isVisible() is True
+    assert card_live.live_icon_label.text() == "📺▶"
+    assert card_live.recording_label.text() == "녹화 중…"
+    assert card_live.spinner.parent() == card_live.live_recording_container
+    assert card_live.spinner.isVisible() is True
+    assert card_live.live_stop_btn.isVisible() is True
+    assert card_live.vod_metrics_widget.isHidden() is True
+    assert card_live.icon_metrics_widget.isVisible() is True
+    assert "00:11" in card_live.time_metric_label.text()
+    assert "19.9 MB" in card_live.size_metric_label.text()
+
+    # 4. C08-VOD 완료: 4번 위치 [Z] 단독, 3번 위치 🕒 시간   ⬇ 용량
+    card_c08_vod = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.READY,
+        vod_info=mock_vod,
+        is_live=False,
+    )
+    qtbot.addWidget(card_c08_vod)
+    card_c08_vod.show()
+    test_file_vod = tmp_path / "test_vod.mp4"
+    test_file_vod.write_bytes(b"x" * 5_500_000)
+    card_c08_vod.set_completed(test_file_vod)
+
+    assert card_c08_vod.status == TaskStatus.COMPLETED
+    assert card_c08_vod.completed_container.isVisible() is True
+    assert card_c08_vod.completed_chzzk_badge.isVisible() is True
+    assert card_c08_vod.completed_live_icon_label.isHidden() is True
+    assert card_c08_vod.icon_metrics_widget.isVisible() is True
+    assert "02:06" in card_c08_vod.time_metric_label.text()
+    assert "5.2 MB" in card_c08_vod.size_metric_label.text()
+
+    # 5. C08-Live 완료: 4번 위치 [Z] + [📺▶], 3번 위치 🕒 시간   ⬇ 용량
+    card_c08_live = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/live/streamer",
+        status=TaskStatus.READY,
+        vod_info=mock_vod,
+        is_live=True,
+    )
+    qtbot.addWidget(card_c08_live)
+    card_c08_live.show()
+    test_file_live = tmp_path / "test_live.mp4"
+    test_file_live.write_bytes(b"x" * 40_800_000)
+    card_c08_live.set_completed(test_file_live)
+
+    assert card_c08_live.status == TaskStatus.COMPLETED
+    assert card_c08_live.completed_container.isVisible() is True
+    assert card_c08_live.completed_chzzk_badge.isVisible() is True
+    assert card_c08_live.completed_live_icon_label.isVisible() is True
+    assert card_c08_live.icon_metrics_widget.isVisible() is True
+    assert "02:06" in card_c08_live.time_metric_label.text()
+    assert "38.9 MB" in card_c08_live.size_metric_label.text()
+
+    # 6. C04 대기 순번 상태 (QUEUED): 대기 순번 및 썸네일 대기 표시
+    card_c04_queued = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.QUEUED,
+        vod_info=mock_vod,
+    )
+    qtbot.addWidget(card_c04_queued)
+    card_c04_queued.show()
+    card_c04_queued.set_waiting_position(3)
+    assert card_c04_queued.status == TaskStatus.QUEUED
+    assert "3번" in card_c04_queued.status_label.text()
+    assert card_c04_queued.thumb_label.text() == "대기"
+
+    # 7. C08 완결 상태 (STOPPED 및 COMPLETED 규격 일원화): 4번 위치 [Z] 뱃지 및 메트릭 유지
+    card_c08_stopped = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/15033444",
+        status=TaskStatus.STOPPED,
+        vod_info=mock_vod,
+    )
+    qtbot.addWidget(card_c08_stopped)
+    card_c08_stopped.show()
+    assert card_c08_stopped.status == TaskStatus.STOPPED
+    assert card_c08_stopped.completed_container.isVisible() is True
+    assert card_c08_stopped.completed_chzzk_badge.isVisible() is True
+    assert card_c08_stopped.icon_metrics_widget.isVisible() is True
+    card_c08_stopped._show_hover_toolbar(True)
+    assert card_c08_stopped.open_folder_btn.isVisible() is True
+    assert card_c08_stopped.play_btn.isVisible() is True
+    assert card_c08_stopped.action_delete_file_btn.isVisible() is True
+    assert card_c08_stopped.delete_btn.isVisible() is True
+
+    # 8. C05 분석 실패 (FAILED_INVALID): Invalid: {url} 문구 및 3번 숨김
+    card_c05 = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/invalid_vod",
+        status=TaskStatus.FAILED_INVALID,
+    )
+    qtbot.addWidget(card_c05)
+    card_c05.show()
+    assert (
+        card_c05.title_label.text()
+        == "Invalid: https://chzzk.naver.com/video/invalid_vod"
+    )
+    assert card_c05.status_label.isHidden() is True
+
+    # 9. C07 다운로드 실패 (FAILED_DOWNLOAD): Download failed: {url} 문구 및 3번 숨김
+    card_c07 = TaskCardWidget(
+        raw_url="https://chzzk.naver.com/video/failed_vod",
+        status=TaskStatus.FAILED_DOWNLOAD,
+        vod_info=mock_vod,
+    )
+    qtbot.addWidget(card_c07)
+    card_c07.show()
+    assert (
+        card_c07.title_label.text()
+        == "Download failed: https://chzzk.naver.com/video/failed_vod"
+    )
+    assert card_c07.status_label.isHidden() is True

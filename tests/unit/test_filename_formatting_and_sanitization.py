@@ -14,18 +14,27 @@ from chzzk_downloader.core.ytdlp import VodInfo
 
 @pytest.mark.ticket("T0109")
 def test_sanitize_filename_converts_colon() -> None:
-    """[T0109] 콜론을 전각 콜론으로 치환하고 Windows 금지 문자를 정제하는지 검증."""
-    raw = '방송: 다시보기? <1> / 테스트 * | "호환"'
+    """콜론 및 금지 문자(/, ?, *, |, ", <, >, \\)를 전각 문자로 치환하는지 검증."""
+    raw = '방송: 다시보기? <1> / 테스트 * | "호환" \\'
     sanitized = sanitize_filename(raw)
     assert ":" not in sanitized
     assert "：" in sanitized  # 전각 콜론
     assert "?" not in sanitized
+    assert "？" in sanitized  # 전각 물음표
     assert "<" not in sanitized
+    assert "＜" in sanitized  # 전각 부등호
     assert ">" not in sanitized
+    assert "＞" in sanitized  # 전각 부등호
     assert "/" not in sanitized
+    assert "／" in sanitized  # 전각 슬래시
     assert "*" not in sanitized
+    assert "＊" in sanitized  # 전각 별표
     assert "|" not in sanitized
+    assert "｜" in sanitized  # 전각 파이프
     assert '"' not in sanitized
+    assert "＂" in sanitized  # 전각 따옴표
+    assert "\\" not in sanitized
+    assert "＼" in sanitized  # 전각 역슬래시
 
 
 @pytest.mark.ticket("T0109")

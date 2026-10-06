@@ -9,10 +9,20 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# src 디렉터리를 sys.path에 추가
-SRC_DIR = Path(__file__).resolve().parent.parent / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+# 최신 작업 워크트리 및 로컬 src 경로 탐색 (우선순위 순서)
+CANDIDATE_DIRS = [
+    Path(__file__).resolve().parent.parent / "src",
+    Path(
+        r"C:\Users\이홍원\.gemini\antigravity\worktrees\chzzk_downloader\implement_high_priority_ticket\src"
+    ),
+]
+
+for src_dir in CANDIDATE_DIRS:
+    if src_dir.exists():
+        src_str = str(src_dir.resolve())
+        if src_str not in sys.path:
+            sys.path.insert(0, src_str)
+        break
 
 from chzzk_downloader.gui.feedback_showcase import main  # noqa: E402
 

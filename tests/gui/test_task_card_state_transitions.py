@@ -96,6 +96,8 @@ def test_stop_download_confirmation(qtbot) -> None:
         assert card.status == TaskStatus.STOPPED
         assert card.ready_container.isHidden() is True
         assert card.downloading_container.isHidden() is True
+        assert card.spinner._timer.isActive() is False
+        assert "완료" in card.status_label.text() or "중지" in card.status_label.text()
 
 
 @pytest.mark.ticket("T0109")

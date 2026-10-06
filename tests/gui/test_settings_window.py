@@ -112,7 +112,7 @@ def test_settings_window_choose_folder_invalid_warning(qtbot, tmp_path: Path) ->
         with patch.object(QMessageBox, "warning") as mock_warn:
             window.folder_btn.click()
             mock_warn.assert_called_once()
-            assert "폴더 오류" in mock_warn.call_args[0][1]
+            assert mock_warn.call_args[0][1] == "Chzzk Downloader"
 
     # 이전 유효 경로 유지 확인
     assert Path(window.folder_input.text()).resolve() == orig_dir
@@ -170,7 +170,7 @@ def test_settings_window_folder_dialog_cancelled_or_error_maintains_path(qtbot) 
         with patch.object(QMessageBox, "warning") as mock_warn:
             window.folder_btn.click()
             mock_warn.assert_called_once()
-            assert "폴더 오류" in mock_warn.call_args[0][1]
+            assert mock_warn.call_args[0][1] == "Chzzk Downloader"
 
         # 경로가 유지되는지 확인
         assert Path(window.folder_input.text()).resolve() == orig_dir
@@ -324,4 +324,4 @@ def test_clear_cookies_failure_handling(qtbot) -> None:
             with patch.object(QMessageBox, "warning") as mock_warning:
                 settings_win._on_clear_clicked()
                 mock_warning.assert_called_once()
-                assert "초기화 실패" in mock_warning.call_args[0][1]
+                assert mock_warning.call_args[0][1] == "Chzzk Downloader"

@@ -30,9 +30,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from chzzk_downloader.core.filename_generator import generate_vod_filename
+from chzzk_downloader.core.task_models import TaskProgress, TaskStatus
 from chzzk_downloader.core.ytdlp import VodFormatInfo, VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
-from chzzk_downloader.gui.task_card import TaskCardWidget, TaskStatus
+from chzzk_downloader.gui.task_card import TaskCardWidget
 from chzzk_downloader.gui.toast import ToastType, ToastWidget
 
 
@@ -93,45 +95,51 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_btn(
             toast_layout,
-            "[T03] 진행중 중복 거부 (⚠️ 경고 아이콘)",
+            "[T02] 진행중 중복 거부 (⚠️ 경고 아이콘)",
             self._demo_toast_duplicate_rejected,
             "#d97706",
         )
         self._add_btn(
             toast_layout,
-            "[T04] 지원하지 않는 URL (Invalid)",
+            "[T03] 지원하지 않는 URL (Invalid)",
             self._demo_toast_unsupported_url,
             "#dc2626",
         )
         self._add_btn(
             toast_layout,
-            "[T05] VOD 확인 실패 (Invalid)",
+            "[T04] VOD 확인 실패 (Invalid)",
             self._demo_toast_vod_check_failed,
             "#dc2626",
         )
         self._add_btn(
             toast_layout,
-            "[T05] 로그인 필요 실패 (줄바꿈 포맷)",
+            "[T04] 로그인 필요 실패 (줄바꿈 포맷)",
             self._demo_toast_login_required,
             "#dc2626",
         )
         self._add_btn(
             toast_layout,
-            "[T06] 쿠키 만료 경고 (쿠키를 갱신하세요, 🍪/N)",
+            "[T05] 쿠키 만료 경고 (쿠키를 갱신하세요, 🍪/N)",
             self._demo_toast_cookie_expired_action,
             "#d97706",
         )
         self._add_btn(
             toast_layout,
-            "[T07] FFmpeg 미가용 경고 (⚠️ 경고 아이콘)",
+            "[T06] FFmpeg 미가용 경고 (⚠️ 경고 아이콘)",
             self._demo_toast_ffmpeg_unavailable,
             "#d97706",
         )
         self._add_btn(
             toast_layout,
-            "[T08] 다운로드 완료 성공 (+ 파일명, 2초 자동소멸)",
+            "[T07] 다운로드 완료 성공 (✓ 초록 체크, 사진 3 규격)",
             self._demo_toast_download_completed,
             "#059669",
+        )
+        self._add_btn(
+            toast_layout,
+            "[T08] 동영상 파일 삭제 (🗑 빨간 휴지통, 사진 규격)",
+            self._demo_toast_file_deleted,
+            "#dc2626",
         )
         toast_layout.addStretch()
         columns_layout.addWidget(toast_group, 1)
@@ -180,11 +188,24 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_btn(
             modal_layout,
-            "[M10] FFmpeg 실행 파일 오류 경고 모달",
+            "[M08] 외부 링크 이동 확인 모달 (치지직 뱃지 클릭)",
+            self._demo_modal_external_link,
+            "#1d4ed8",
+        )
+        self._add_btn(
+            modal_layout,
+            "[M09] FFmpeg 실행 파일 오류 경고 모달",
             self._demo_modal_ffmpeg_error,
             "#b45309",
         )
+        self._add_btn(
+            modal_layout,
+            "[M10] 파일 삭제 확인 모달 (Danger 빨간 하이라이트)",
+            self._demo_modal_delete_file,
+            "#b91c1c",
+        )
         modal_layout.addStretch()
+
         columns_layout.addWidget(modal_group, 1)
 
         mt_layout.addLayout(columns_layout, 1)
@@ -250,7 +271,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_toast_duplicate_rejected(self) -> None:
-        self._log("[T03] 진행중 중복 거부 토스트 호출 (⚠️ 경고 아이콘)")
+        self._log("[T02] 진행중 중복 거부 토스트 호출 (⚠️ 경고 아이콘)")
         msg = (
             '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
             '<span style="color: #ffffff;">이미 추가한 작업입니다.</span>'
@@ -262,7 +283,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_toast_unsupported_url(self) -> None:
-        self._log("[T04] 지원하지 않는 URL 실패 토스트 (Invalid)")
+        self._log("[T03] 지원하지 않는 URL 실패 토스트 (Invalid)")
         self.toast.show_toast(
             "Invalid: https://invalid-url.com/vod/9999",
             ToastType.ERROR,
@@ -270,7 +291,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_toast_vod_check_failed(self) -> None:
-        self._log("[T05] VOD 확인 실패 토스트 (Invalid)")
+        self._log("[T04] VOD 확인 실패 토스트 (Invalid)")
         self.toast.show_toast(
             "Invalid: https://chzzk.naver.com/video/40404040",
             ToastType.ERROR,
@@ -278,7 +299,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_toast_login_required(self) -> None:
-        self._log("[T05] 로그인 필요 실패 토스트 (줄바꿈 포맷)")
+        self._log("[T04] 로그인 필요 실패 토스트 (줄바꿈 포맷)")
         self.toast.show_toast(
             "Login required; Please login\nhttps://chzzk.naver.com/video/19000000",
             ToastType.ERROR,
@@ -287,7 +308,7 @@ class FeedbackShowcaseWindow(QMainWindow):
 
     def _demo_toast_cookie_expired_action(self) -> None:
         self._log(
-            "[T06] 쿠키 만료 경고 액션 토스트 호출 (쿠키를 갱신하세요, 🍪/N 아이콘)"
+            "[T05] 쿠키 만료 경고 액션 토스트 호출 (쿠키를 갱신하세요, 🍪/N 아이콘)"
         )
         msg = (
             '<span style="color: #f59e0b; font-size: 14px; font-weight: bold; margin-right: 6px;">⚠️</span> '
@@ -312,7 +333,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_toast_ffmpeg_unavailable(self) -> None:
-        self._log("[T07] FFmpeg 미가용 경고 토스트 호출")
+        self._log("[T06] FFmpeg 미가용 경고 토스트 호출")
         self.toast.show_toast(
             '<span style="color: #f59e0b;">⚠️</span> FFmpeg를 사용할 수 없습니다. 환경설정에서 FFmpeg를 설정해주세요.',
             ToastType.WARNING,
@@ -320,11 +341,41 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_toast_download_completed(self) -> None:
-        self._log("[T08] 다운로드 완료 성공 토스트 호출")
+        vod_sample = VodInfo(
+            video_no="15033444",
+            video_title="김나성박이 (8STXaDJBI1)",
+            channel_name="김나성",
+            duration=26,
+        )
+        fn = generate_vod_filename(vod_sample, ext=".mp4")
+        self._log(f"[T07] 다운로드 완료 성공 토스트 호출 (✓ 초록 체크, 파일명: {fn})")
+        msg = (
+            '<span style="color: #10b981; font-weight: bold; font-size: 14px;">✓</span> '
+            f'<span style="color: #ffffff;">{fn}</span>'
+        )
         self.toast.show_toast(
-            "+ 다운로드 완료: [스트리머A] 2026-09-07 방송 다시보기.mp4",
+            msg,
             ToastType.SUCCESS,
             auto_dismiss_ms=2000,
+        )
+
+    def _demo_toast_file_deleted(self) -> None:
+        vod_sample = VodInfo(
+            video_no="15033444",
+            video_title="김나성박이 (8STXaDJBI1)",
+            channel_name="김나성",
+            duration=26,
+        )
+        fn = generate_vod_filename(vod_sample, ext=".mp4")
+        self._log(f"[T08] 동영상 파일 삭제 토스트 호출 (🗑 빨간 휴지통, 파일명: {fn})")
+        msg = (
+            '<span style="color: #ef4444; font-size: 14px;">🗑</span> '
+            f'<span style="color: #ffffff;">{fn}</span>'
+        )
+        self.toast.show_toast(
+            msg,
+            ToastType.ERROR,
+            auto_dismiss_ms=2500,
         )
 
     # --- 모달 데모 메서드 ---
@@ -360,12 +411,18 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
 
     def _demo_modal_file_conflict(self) -> None:
-        self._log("[M04] 파일명 중복 충돌 모달 (간소화 문구) 호출 대기...")
+        vod_sample = VodInfo(
+            video_no="15021267",
+            video_title="즐거운 치지직 방송 다시보기 풀영상",
+            channel_name="스트리머A",
+            duration=7320,
+            live_open_date="2026-09-07",
+        )
+        fn = generate_vod_filename(vod_sample, ext=".mp4")
+        self._log(f"[M04] 파일명 중복 충돌 모달 (간소화 문구, {fn}) 호출 대기...")
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Chzzk Downloader")
-        msg_box.setText(
-            "이미 동일한 이름의 파일이 존재합니다:\n[스트리머A] 2026-09-06 방송.mp4"
-        )
+        msg_box.setText(f"이미 동일한 이름의 파일이 존재합니다:\n{fn}")
         overwrite_btn = msg_box.addButton("덮어쓰기", QMessageBox.ButtonRole.AcceptRole)
         rename_btn = msg_box.addButton("이름 변경", QMessageBox.ButtonRole.ActionRole)
         msg_box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
@@ -399,16 +456,48 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._log("[M07] 경고 모달 닫힘")
 
+    def _demo_modal_external_link(self) -> None:
+        self._log("[M08] 외부 링크 이동 확인 모달 (치지직 뱃지 클릭) 호출 대기...")
+        ok = ask_confirm_dialog(
+            parent=self,
+            text="해당 링크로 이동합니다.\n\n이동하시겠습니까?\nhttps://chzzk.naver.com/video/15021267",
+            title="Chzzk Downloader",
+        )
+        self._log(
+            f"[M08] 링크 이동 결과: {'[확인] 승인됨 (브라우저 이동)' if ok else '[취소] 거부됨'}"
+        )
+
     def _demo_modal_ffmpeg_error(self) -> None:
-        self._log("[M10] FFmpeg 실행 파일 오류 경고 모달 호출")
+        self._log("[M09] FFmpeg 실행 파일 오류 경고 모달 호출")
         QMessageBox.warning(
             self,
             "Chzzk Downloader",
             "선택한 파일이 유효한 FFmpeg 실행 파일이 아닙니다:\nC:\\invalid\\path\\fake_ffmpeg.exe\n\n상태: 실행 실패",
         )
-        self._log("[M10] 경고 모달 닫힘")
+        self._log("[M09] 경고 모달 닫힘")
+
+    def _demo_modal_delete_file(self) -> None:
+        vod_sample = VodInfo(
+            video_no="15021267",
+            video_title="즐거운 치지직 방송 다시보기 풀영상",
+            channel_name="스트리머A",
+            duration=7320,
+            live_open_date="2026-09-07",
+        )
+        fn = generate_vod_filename(vod_sample, ext=".mp4")
+        self._log(f"[M10] 파일 삭제 확인 모달 (Danger 빨간 강조, {fn}) 호출 대기...")
+        ok = ask_confirm_dialog(
+            parent=self,
+            text=f"다음 파일이 삭제됩니다:\n{fn}",
+            title="Chzzk Downloader",
+            is_danger=True,
+        )
+        self._log(
+            f"[M10] 파일 삭제 결과: {'[확인] 승인됨 (휴지통 안전 삭제 실행)' if ok else '[취소] 거부됨'}"
+        )
 
     # --- 작업 목록 카드 데모 탭 구성 ---
+
     def _create_cards_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -416,7 +505,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         layout.setSpacing(8)
 
         info_lbl = QLabel(
-            "💡 작업 카드의 9대 상태별 레이아웃(대기 중/정상 대기/분석 중/다운로드 중/중지/완료 및 실패 빨간색·주황색 바, 치지직 뱃지, 우상단 호버 툴바)을 확인하세요.",
+            "💡 작업 카드의 상태별 레이아웃(C01~C09, VOD/Live 다운로드 및 완료 분기, 호버 툴바)을 확인하세요.",
             container,
         )
         info_lbl.setStyleSheet("color: #9ca3af; font-size: 12px; margin-bottom: 2px;")
@@ -436,7 +525,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         # Mock VodInfo 객체들
         mock_ready_vod = VodInfo(
             video_no="15021267",
-            video_title="[스트리머A] 즐거운 치지직 방송 다시보기 풀영상",
+            video_title="즐거운 치지직 방송 다시보기 풀영상",
             channel_name="스트리머A",
             duration=7320,
             formats=[
@@ -449,24 +538,43 @@ class FeedbackShowcaseWindow(QMainWindow):
 
         mock_downloading_vod = VodInfo(
             video_no="15033444",
-            video_title="[스트리머B] 치지직 대회 본선 생중계 녹화",
-            channel_name="스트리머B",
-            duration=3600,
+            video_title="김나성박이 (8STXaDJBI1)",
+            channel_name="김나성",
+            duration=26,
             formats=[VodFormatInfo(format_id="1080p", height=1080, fps=60.0)],
+        )
+
+        mock_live_vod = VodInfo(
+            video_no="live9999",
+            video_title="퍼즐게임 인챈트 평균 넘기기",
+            channel_name="따효니",
+            duration=140,
+            formats=[VodFormatInfo(format_id="1080p", height=1080, fps=60.0)],
+            live_open_date="2026-10-03",
         )
 
         mock_failed_vod = VodInfo(
             video_no="15099888",
-            video_title="[스트리머C] 세그먼트 전송 실패 VOD",
+            video_title="세그먼트 전송 실패 VOD",
             channel_name="스트리머C",
             duration=1800,
             formats=[VodFormatInfo(format_id="1080p", height=1080, fps=60.0)],
         )
 
-        # [C01] READY
+        # [C01] ANALYZING
         self._add_card_section(
             scroll_layout,
-            "[C01] 정상 대기 (READY) - 최고 화질 및 기본 확장자 선택, 시작 버튼",
+            "[C01] 분석 중 (ANALYZING) - 좌측 썸네일 중앙 회색 스피너, 읽는 중… 상태 (호버 시 2번: [📁] [✕])",
+            TaskCardWidget(
+                raw_url="https://chzzk.naver.com/video/15021267",
+                status=TaskStatus.ANALYZING,
+            ),
+        )
+
+        # [C02] READY
+        self._add_card_section(
+            scroll_layout,
+            "[C02] 정상 대기 (READY) - 마우스 호버 시 2번 위치에 [📁 폴더 열기] + [✕ 목록 삭제]",
             TaskCardWidget(
                 raw_url="https://chzzk.naver.com/video/15021267",
                 status=TaskStatus.READY,
@@ -474,36 +582,67 @@ class FeedbackShowcaseWindow(QMainWindow):
             ),
         )
 
-        # [C02] ANALYZING
+        # [C03-VOD] DOWNLOADING (VOD)
+        card_downloading_vod = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/15033444",
+            status=TaskStatus.DOWNLOADING,
+            vod_info=mock_downloading_vod,
+            is_live=False,
+        )
+        card_downloading_vod.update_progress(
+            TaskProgress(
+                task_id="15033444",
+                downloaded_bytes=534_200_000,
+                total_bytes=1_250_000_000,
+                percentage=42.7,
+                speed_str="15.4 MB/s",
+                eta_seconds=205,
+                eta_str="00:03:25",
+                elapsed_seconds=75.0,
+            )
+        )
         self._add_card_section(
             scroll_layout,
-            "[C02] 분석 중 (ANALYZING) - 읽는 중… 상태",
-            TaskCardWidget(
-                raw_url="https://chzzk.naver.com/video/15021267",
-                status=TaskStatus.ANALYZING,
-            ),
+            "[C03-VOD] VOD 다운로드 중 - 4번: [Z] [■] 미니멀 진행바 + 42% / 3번: 15.4 MB/s | 00:03:25 | ⬇ 534.2 MB",
+            card_downloading_vod,
         )
 
-        # [C03] DOWNLOADING
+        # [C03-Live] DOWNLOADING (Live, 사진 1 규격)
+        card_downloading_live = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/live/ddahyoni",
+            status=TaskStatus.DOWNLOADING,
+            vod_info=mock_live_vod,
+            is_live=True,
+        )
+        card_downloading_live.update_progress(
+            TaskProgress(
+                task_id="live9999",
+                downloaded_bytes=19_900_000,
+                total_bytes=0,
+                percentage=0.0,
+                speed_str="1.2 MB/s",
+                eta_seconds=0,
+                eta_str="",
+                elapsed_seconds=11.0,
+            )
+        )
         self._add_card_section(
             scroll_layout,
-            "[C03] 다운로드 중 (DOWNLOADING) - 녹화 중… 스피너 및 중지 버튼",
-            TaskCardWidget(
-                raw_url="https://chzzk.naver.com/video/15033444",
-                status=TaskStatus.DOWNLOADING,
-                vod_info=mock_downloading_vod,
-            ),
+            "[C03-Live] 라이브 녹화 중 (사진 1) - 4번: [Z] [📺▶] 녹화 중… [🔄] [■] / 3번: 🕒 00:11   ⬇ 19.9 MB (속도 제외)",
+            card_downloading_live,
         )
 
-        # [C04] STOPPED
+        # [C04] QUEUED (순번 대기)
+        card_queued = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/15033444",
+            status=TaskStatus.QUEUED,
+            vod_info=mock_downloading_vod,
+        )
+        card_queued.set_waiting_position(2)
         self._add_card_section(
             scroll_layout,
-            "[C04] 다운로드 중지 (STOPPED) - 중지됨 완결",
-            TaskCardWidget(
-                raw_url="https://chzzk.naver.com/video/15033444",
-                status=TaskStatus.STOPPED,
-                vod_info=mock_downloading_vod,
-            ),
+            "[C04] 순번 대기 (QUEUED) - 대기 순번 라벨 (대기 순번: 2번), 썸네일 대기 텍스트",
+            card_queued,
         )
 
         # [C05] FAILED_INVALID
@@ -517,7 +656,7 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C05] 실패 - Invalid (FAILED_INVALID) - 빨간색 좌측 바, [치지직 뱃지] + [🗨️! 툴팁]",
+            "[C05] 실패 - Invalid (FAILED_INVALID) - 제목 'Invalid: {url}', 빨간색 좌측 바, [치지직 뱃지] + [🗨️! 툴팁]",
             card_invalid,
         )
 
@@ -548,34 +687,36 @@ class FeedbackShowcaseWindow(QMainWindow):
         )
         self._add_card_section(
             scroll_layout,
-            "[C07] 실패 - 다운로드 오류 (FAILED_DOWNLOAD) - 주황색 좌측 바, [치지직] + [🗨️! 툴팁]",
+            "[C07] 실패 - 다운로드 오류 (FAILED_DOWNLOAD) - 제목 'Download failed: {url}', 주황색 좌측 바, [치지직] + [🗨️! 툴팁]",
             card_download_fail,
         )
 
-        # [C08] COMPLETED
-        card_completed = TaskCardWidget(
-            raw_url="https://chzzk.naver.com/video/15021267",
+        # [C08-VOD] COMPLETED (VOD, 사진 2 상단 규격)
+        card_completed_vod = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/15033444",
             status=TaskStatus.READY,
-            vod_info=mock_ready_vod,
+            vod_info=mock_downloading_vod,
+            is_live=False,
         )
-        card_completed.set_completed(Path(__file__).resolve())
+        card_completed_vod.set_completed(Path(__file__).resolve())
         self._add_card_section(
             scroll_layout,
-            "[C08] 완료 (COMPLETED) - 완료 (재생시간), 우상단 마우스 호버 시 3대 액션 툴바 [📁 폴더 열기] + [▶ 재생] + [✕ 삭제]",
-            card_completed,
+            "[C08-VOD] VOD 완결 (완료 및 중단, 사진 2 상단) - 4번: [Z] 단독 / 3번: 🕒 00:26   ⬇ 파일크기 (호버 시 4대 액션 툴바)",
+            card_completed_vod,
         )
 
-        # [C09] QUEUED
-        card_queued = TaskCardWidget(
-            raw_url="https://chzzk.naver.com/video/15033444",
-            status=TaskStatus.QUEUED,
-            vod_info=mock_downloading_vod,
+        # [C08-Live] COMPLETED / STOPPED (Live, 사진 2 하단 규격)
+        card_completed_live = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/live/ddahyoni",
+            status=TaskStatus.READY,
+            vod_info=mock_live_vod,
+            is_live=True,
         )
-        card_queued.set_waiting_position(2)
+        card_completed_live.set_completed(Path(__file__).resolve())
         self._add_card_section(
             scroll_layout,
-            "[C09] 대기 중 (QUEUED) - 대기 순번 라벨 (대기 순번: 2번), 썸네일 대기 텍스트",
-            card_queued,
+            "[C08-Live] 라이브 녹화 완결 (완료 및 중단, 사진 2 하단) - 4번: [Z] [📺▶] 유지 / 3번: 🕒 02:20   ⬇ 파일크기 (호버 시 4대 액션 툴바)",
+            card_completed_live,
         )
 
         scroll_layout.addStretch()
@@ -614,6 +755,10 @@ class FeedbackShowcaseWindow(QMainWindow):
             lambda: self._log(f"작업 카드: [■ 다운로드 중지] 클릭됨 ({card.raw_url})")
         )
 
+        if hasattr(card, "action_delete_file_btn"):
+            card.action_delete_file_btn.clicked.connect(
+                lambda: self._log(f"작업 카드: [🗑️ 파일 삭제] 클릭됨 ({card.raw_url})")
+            )
         if hasattr(card, "open_folder_btn"):
             card.open_folder_btn.clicked.connect(
                 lambda: self._log(f"작업 카드: [📁 폴더 열기] 클릭됨 ({card.raw_url})")

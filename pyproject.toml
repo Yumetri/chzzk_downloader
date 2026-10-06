@@ -28,25 +28,55 @@ build-backend = "hatchling.build"
 [tool.ruff]
 target-version = "py312"
 line-length = 88
+extend-exclude = [".agents"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "N", "UP", "B"]
+select = ["E4", "E7", "E9", "F", "I", "N", "UP", "B", "BLE", "S110", "C90", "PLR0912", "PLR0915", "TID"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"PyQt6.sip.isdeleted".msg = "AGENTS.md R3: 위젯이 비동기 시그널을 직접 받지 않게 설계하세요."
+"time.sleep".msg = "AGENTS.md T: 테스트는 qtbot.waitUntil/waitSignal을 쓰세요. (src에서 필요하면 이 파일에서 예외 처리)"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["N999"]
+# --- LEGACY: 아래 목록은 줄이기만 한다. 새 파일을 추가하지 않는다 (AGENTS.md §0) ---
+"src/chzzk_downloader/core/cookie_manager.py" = ["BLE001", "C901"]
+"src/chzzk_downloader/core/ffmpeg_manager.py" = ["BLE001", "C901", "PLR0912", "PLR0915", "S110"]
+"src/chzzk_downloader/core/settings_manager.py" = ["BLE001"]
+"src/chzzk_downloader/core/ytdlp.py" = ["BLE001", "C901", "S110"]
+"src/chzzk_downloader/gui/feedback_showcase.py" = ["PLR0915"]
+"src/chzzk_downloader/gui/main_window.py" = ["BLE001", "C901", "PLR0912", "PLR0915", "S110", "TID251"]
+"src/chzzk_downloader/gui/naver_login_dialog.py" = ["BLE001", "S110"]
+"src/chzzk_downloader/gui/settings_window.py" = ["BLE001", "PLR0915"]
+"src/chzzk_downloader/gui/task_card.py" = ["BLE001", "C901", "PLR0912", "PLR0915", "S110", "TID251"]
+"src/chzzk_downloader/gui/task_info_window.py" = ["BLE001", "C901", "PLR0912", "PLR0915", "TID251"]
+"src/chzzk_downloader/gui/toast.py" = ["C901"]
+"src/chzzk_downloader/gui/workers.py" = ["BLE001", "C901", "S110"]
+"tests/gui/test_task_card_download_guards.py" = ["TID251"]
+"tests/gui/test_main_window_lifecycle_and_recheck.py" = ["TID251"]
+"tests/unit/test_ffmpeg_probing_and_lifecycle.py" = ["TID251"]
+"tests/gui/test_ffmpeg_bootstrap_worker.py" = ["TID251"]
+"tests/unit/test_adversarial_round5_defects.py" = ["TID251"]
+"tests/unit/test_download_completion_and_failure_feedback.py" = ["TID251"]
+"tests/unit/test_task_manager.py" = ["TID251"]
+"tests/unit/test_task_manager_ui_integration.py" = ["TID251"]
+"tests/gui/test_modal_dialogs_and_feedback.py" = ["PLR0915"]
 
 [tool.pyrefly]
 project-includes = [
-    "**/*.py*",
-    "**/*.ipynb",
+    "src/**/*.py",
+    "tests/**/*.py",
 ]
 
 [tool.pyrefly.errors]
 bad-override-param-name = false
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
     "ticket(id): associate a test with its originating ticket/issue ID (e.g. T0101, T0110)",
 ]
-
