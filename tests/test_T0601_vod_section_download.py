@@ -1637,6 +1637,57 @@ class TestSectionEdgeCases:
             timeout=3000,
         )
 
+    def test_card_retry_detaches_previous_probe_worker(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """다시 시작 시 실행 중인 이전 프로빙 워커가 분리되고 새 중지 상태를 오염시키지 않는지 검증."""
+        import threading
+
+        from chzzk_downloader.core.task_models import TaskStatus
+        from chzzk_downloader.gui.task_card import (
+            _DETACHED_PROBE_WORKERS,
+            TaskCardWidget,
+        )
+        from chzzk_downloader.gui.workers import MediaProbeWorker
+
+        fake_file = tmp_path / "probe_retry.mp4"
+        fake_file.write_bytes(b"data" * 512)
+
+        card = TaskCardWidget("https://chzzk.naver.com/video/v_retry")
+        qtbot.addWidget(card)
+
+        release_old = threading.Event()
+
+        class SlowWorker(MediaProbeWorker):
+            def run(self) -> None:
+                release_old.wait(timeout=2.0)
+                self.probed.emit(self.task_id, 32.0, 1024)
+
+        old_worker = SlowWorker("v_retry", fake_file)
+        card.attach_probe_worker(old_worker)
+        old_worker.start()
+        qtbot.waitUntil(lambda: old_worker.isRunning(), timeout=1000)
+
+        # 다시 시작 트리거 (실제 다시 시작 버튼 클릭 경로)
+        card.trigger_retry()
+
+        # 이전 워커가 분리 보관 집합으로 위임되었는지 검증
+        assert old_worker in _DETACHED_PROBE_WORKERS
+
+        # 새 실행 및 중지 상태 시뮬레이션
+        card.set_task_status(TaskStatus.STOPPED)
+        card.time_metric_label.setText("00:09")
+
+        # 이전 워커 지연 완료
+        release_old.set()
+        qtbot.waitUntil(
+            lambda: old_worker not in _DETACHED_PROBE_WORKERS,
+            timeout=3000,
+        )
+
+        # 카드의 라벨이 이전 워커의 결과(32초)로 오염되지 않고 유지되어야 함
+        assert card.time_metric_label.text() == "00:09"
+
     def test_detach_probe_worker_handles_already_finished_thread(
         self, qtbot: Any, tmp_path: Path
     ) -> None:
@@ -1700,6 +1751,235 @@ class TestSectionEdgeCases:
         # closeEvent 종료 후 _DETACHED_PROBE_WORKERS가 비워지고 워커가 실행 중이 아니어야 함
         assert len(_DETACHED_PROBE_WORKERS) == 0
         assert not worker.isRunning()
+
+    def test_cleanup_partial_files_preserves_preexisting_file_not_in_created_paths(
+        self, tmp_path: Path
+    ) -> None:
+        """워커가 생성하지 않은 기존 파일은 취소 시 절대 삭제되지 않고 온전히 보존되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskSpec
+        from chzzk_downloader.gui.workers import VodDownloadWorker
+
+        preexisting_file = tmp_path / "original_video.ts"
+        preexisting_file.write_bytes(b"important user data")
+        neighbor_file = tmp_path / "neighbor_keep.mp4"
+        neighbor_file.write_bytes(b"neighbor data")
+
+        spec = TaskSpec(
+            task_id="task-clean-test",
+            video_url="https://chzzk.naver.com/video/123",
+            save_path=str(preexisting_file),
+        )
+        worker = VodDownloadWorker(spec)
+        assert len(worker.created_paths) == 0
+
+        # 취소 정리 실행
+        worker.cleanup_partial_files(delete_media=True)
+
+        # 기존 파일과 이웃 파일이 온전히 보존되어야 함 (음성 단언)
+        assert preexisting_file.exists(), (
+            "워커가 생성하지 않은 기존 파일이 삭제되었습니다."
+        )
+        assert preexisting_file.read_bytes() == b"important user data"
+        assert neighbor_file.exists()
+
+    def test_cleanup_partial_files_deletes_zero_byte_part_even_if_delete_media_false(
+        self, tmp_path: Path
+    ) -> None:
+        """delete_media=False라도 생성된 0바이트 임시(.part) 파일은 깨끗이 정리되어야 함을 검증."""
+        from chzzk_downloader.core.task_models import TaskSpec
+        from chzzk_downloader.gui.workers import VodDownloadWorker
+
+        save_path = tmp_path / "video.mp4"
+        part_file = tmp_path / "video.mp4.part"
+        part_file.write_bytes(b"")
+
+        spec = TaskSpec(
+            task_id="t-zero-part",
+            video_url="https://chzzk.naver.com/video/1",
+            save_path=str(save_path),
+        )
+        worker = VodDownloadWorker(spec)
+        worker.cleanup_partial_files(delete_media=False)
+
+        assert not part_file.exists(), (
+            "0바이트 임시(.part) 파일이 정리되지 않고 디스크에 방치되었습니다."
+        )
+
+    def test_main_window_close_event_waits_for_media_remux_worker(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """메인 윈도우 종료 시 실행 중인 MediaRemuxWorker가 안전하게 대기 및 정리되는지 검증."""
+        import threading
+
+        from PyQt6.QtGui import QCloseEvent
+
+        from chzzk_downloader.gui.main_window import MainWindow
+        from chzzk_downloader.gui.media_workers import MediaRemuxWorker
+
+        win = MainWindow()
+        qtbot.addWidget(win)
+
+        src_file = tmp_path / "src.mp4"
+        dst_file = tmp_path / "dst.mp4"
+        src_file.write_bytes(b"src")
+
+        release = threading.Event()
+
+        class SlowRemuxWorker(MediaRemuxWorker):
+            def run(self) -> None:
+                release.wait(timeout=2.0)
+
+        remux_worker = SlowRemuxWorker("task-remux-close", src_file, dst_file)
+        win.register_remux_worker(remux_worker)
+        remux_worker.start()
+
+        # 별도 비동기 스레드에서 closeEvent 진행 중 안전 해제 트리거
+        def delayed_release() -> None:
+            threading.Event().wait(0.05)
+            release.set()
+
+        t = threading.Thread(target=delayed_release)
+        t.start()
+
+        win.closeEvent(QCloseEvent())
+        t.join(timeout=1.0)
+
+        assert win.active_remux_worker_count == 0
+        assert not remux_worker.isRunning()
+
+    def test_section_poller_restart_race_prevents_thread_leak(
+        self, tmp_path: Path
+    ) -> None:
+        """루프 본문 처리 중 stop() 후 즉시 start() 호출 시 이전 스레드가 부활하여 중복 실행되지 않는지 검증."""
+        import threading
+
+        from chzzk_downloader.gui.section_poller import SectionProgressPoller
+
+        in_loop = threading.Event()
+        allow_finish = threading.Event()
+
+        def slow_callback(p: Any) -> None:
+            in_loop.set()
+            allow_finish.wait(timeout=1.0)
+
+        dummy_path = tmp_path / "race_test.mp4"
+        dummy_path.write_bytes(b"dummy")
+
+        poller = SectionProgressPoller(
+            "race-task",
+            dummy_path,
+            poll_interval_sec=0.01,
+            progress_callback=slow_callback,
+        )
+        poller.start()
+        assert in_loop.wait(timeout=1.0), "폴러 스레드가 루프에 진입하지 못했습니다."
+
+        # 루프 본문 실행 도중 정지 후 즉시 재시작
+        poller.stop()
+        poller.start()
+
+        allow_finish.set()
+        threading.Event().wait(0.05)
+
+        active_pollers = [
+            t
+            for t in threading.enumerate()
+            if "SectionPoller-race-task" in t.name and t.is_alive()
+        ]
+        poller.stop()
+        assert len(active_pollers) == 1, (
+            f"폴러 스레드가 중복 누수되었습니다: {len(active_pollers)}개"
+        )
+
+    def test_remux_finished_aborts_when_card_is_in_ready_status(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """카드가 READY 상태(재다운로드 대기 중)일 때 이전 세션의 리먹스 완료 이벤트가 파일을 덮어쓰지 않는지 검증."""
+        from chzzk_downloader.core.task_models import TaskSpec, TaskStatus
+        from chzzk_downloader.gui.main_window import MainWindow
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        win = MainWindow()
+        qtbot.addWidget(win)
+
+        task_id = "test-remux-ready"
+        target_path = tmp_path / "my_video.mp4"
+        target_path.write_bytes(b"user ready data")
+        remux_out = tmp_path / "my_video.final.mp4"
+        remux_out.write_bytes(b"stale remux data")
+
+        card = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/1",
+            status=TaskStatus.READY,
+            parent=win,
+        )
+        card.task_id = task_id
+        win.task_list_widget.add_task_card(card)
+
+        spec = TaskSpec(
+            task_id=task_id,
+            video_url="https://chzzk.naver.com/video/1",
+            save_path=str(target_path),
+        )
+        win.task_manager.add_task(spec)
+        win.task_manager.reset_task(task_id)
+        assert win.task_manager.get_task_status(task_id) == TaskStatus.READY
+
+        # 이전 세션 리먹스 완료 시뮬레이션
+        from chzzk_downloader.gui.media_workers import MediaRemuxWorker
+
+        dummy_worker = MediaRemuxWorker(task_id, target_path, remux_out)
+        win.handle_remux_finished(
+            dummy_worker, task_id, True, str(remux_out), target_path
+        )
+
+        assert target_path.read_bytes() == b"user ready data", (
+            "READY 상태인 카드의 파일이 구 리먹스 데이터로 덮어쓰였습니다."
+        )
+
+    def test_remux_finished_aborts_replacement_if_task_restarted_or_removed(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """리먹싱 도중 카드가 실제로 목록에 존재하고 다운로드 진행 중인 경우 파일 덮어쓰기 및 완료 처리가 안전하게 중단되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskSpec, TaskStatus
+        from chzzk_downloader.gui.main_window import MainWindow
+        from chzzk_downloader.gui.media_workers import MediaRemuxWorker
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        win = MainWindow()
+        qtbot.addWidget(win)
+
+        task_id = "task-remux-restart"
+        target_path = tmp_path / "original.mp4"
+        target_path.write_bytes(b"new active download data")
+
+        card = TaskCardWidget(
+            raw_url="https://chzzk.naver.com/video/1",
+            status=TaskStatus.DOWNLOADING,
+            parent=win,
+        )
+        card.task_id = task_id
+        win.task_list_widget.add_task_card(card)
+
+        spec = TaskSpec(
+            task_id=task_id,
+            video_url="https://chzzk.naver.com/video/1",
+            save_path=str(target_path),
+        )
+        win.task_manager.add_task(spec)
+        assert win.task_manager.get_task_status(task_id) == TaskStatus.DOWNLOADING
+
+        remux_out = tmp_path / "original.final.mp4"
+        remux_out.write_bytes(b"stale remux data")
+
+        dummy_worker = MediaRemuxWorker(task_id, target_path, remux_out)
+        win.handle_remux_finished(
+            dummy_worker, task_id, True, str(remux_out), target_path
+        )
+
+        assert target_path.read_bytes() == b"new active download data"
+        assert win.task_manager.get_task_status(task_id) == TaskStatus.DOWNLOADING
+        assert not remux_out.exists()
 
     def test_subprocess_tracker_enforces_utf8_and_replace_on_text_pipes(
         self, monkeypatch: Any

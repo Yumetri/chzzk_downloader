@@ -1053,7 +1053,12 @@ class TaskCardWidget(QFrame):
 
     def trigger_retry(self) -> None:
         """다시 시작(재시도) 시그널을 방출합니다 (공개 메서드)."""
+        self._detach_probe_worker()
         self.retry_requested.emit(self.task_id)
+
+    def detach_probe_worker(self) -> None:
+        """실행 중인 미디어 프로빙 워커를 안전하게 분리합니다 (공개 메서드)."""
+        self._detach_probe_worker()
 
     def trigger_complete(self) -> None:
         """현재 파일로 완료 확정 시그널을 방출합니다 (공개 메서드)."""
@@ -1440,8 +1445,7 @@ class TaskCardWidget(QFrame):
 
         from chzzk_downloader.gui.workers import MediaProbeWorker
 
-        if self._probe_worker is not None and self._probe_worker.isRunning():
-            return
+        self._detach_probe_worker()
 
         worker = MediaProbeWorker(self.task_id, p, parent=None)
         worker.probed.connect(self._on_media_probed)

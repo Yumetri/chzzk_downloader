@@ -51,7 +51,7 @@ class SectionProgressPoller:
         self.estimated_total_bytes = max(0, int(estimated_total_bytes))
         self.progress_callback = progress_callback
 
-        self._stop_event = threading.Event()
+        self._stop_event: threading.Event | None = None
         self._thread: threading.Thread | None = None
         self._start_time: float = 0.0
         self._last_poll_time: float = 0.0
@@ -61,23 +61,25 @@ class SectionProgressPoller:
         """폴링 스레드를 시작합니다."""
         if self._thread is not None and self._thread.is_alive():
             return
-        self._stop_event.clear()
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         self._start_time = time.perf_counter()
         self._last_poll_time = self._start_time
         self._last_bytes = 0
         self._thread = threading.Thread(
             target=self._run_loop,
+            args=(stop_event,),
             name=f"SectionPoller-{self.task_id}",
             daemon=True,
         )
         self._thread.start()
 
     def stop(self) -> None:
-        """폴링 스레드를 정지하고 종료를 대기합니다."""
-        self._stop_event.set()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-            self._thread = None
+        """폴링 스레드에 정지 신호를 전달합니다 (GUI 스레드 논블로킹)."""
+        if self._stop_event is not None:
+            self._stop_event.set()
+            self._stop_event = None
+        self._thread = None
 
     def _get_current_file_size(self) -> int:
         """타깃 파일 또는 임시(.part) 파일의 현재 디스크 크기(바이트)를 반환합니다."""
@@ -97,9 +99,11 @@ class SectionProgressPoller:
                 continue
         return max_size
 
-    def _run_loop(self) -> None:
+    def _run_loop(self, stop_event: threading.Event) -> None:
         """지정된 주기로 파일 크기를 검사하고 TaskProgress를 생성하여 전달합니다."""
-        while not self._stop_event.wait(self.poll_interval_sec):
+        while not stop_event.wait(self.poll_interval_sec):
+            if stop_event.is_set():
+                break
             now = time.perf_counter()
             cur_bytes = self._get_current_file_size()
             elapsed = now - self._start_time if self._start_time > 0 else 0.0

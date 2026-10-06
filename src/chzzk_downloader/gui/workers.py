@@ -268,21 +268,18 @@ class VodDownloadWorker(QThread):
             self.progress_updated.emit(progress)
 
     def _cleanup_partial_files(self, delete_media: bool = True) -> None:
-        """취소 또는 실패 시 생성된 파일들을 정리합니다. delete_media=False 시 유효한 미디어(> 0B)는 보존합니다."""
+        """취소 또는 실패 시 생성된 파일들을 정리합니다. 워커가 직접 생성한 파일만 삭제합니다."""
         target_path = Path(self.task_spec.save_path)
-        temp_ytdl = Path(str(target_path) + ".ytdl")
-        try:
-            if temp_ytdl.is_file() and delete_media:
-                temp_ytdl.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-        cleanup_targets = set(self.created_paths)
-        cleanup_targets.add(Path(str(target_path) + ".part"))
-        if delete_media:
-            cleanup_targets.add(target_path)
-
-        for p in cleanup_targets:
+        for temp_p in (
+            Path(str(target_path) + ".ytdl"),
+            Path(str(target_path) + ".part"),
+        ):
+            try:
+                if temp_p.is_file() and (delete_media or temp_p.stat().st_size == 0):
+                    temp_p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for p in set(self.created_paths):
             try:
                 if p.is_file() and (delete_media or p.stat().st_size == 0):
                     p.unlink(missing_ok=True)
