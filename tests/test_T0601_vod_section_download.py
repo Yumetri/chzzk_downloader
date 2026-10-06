@@ -1256,14 +1256,16 @@ class TestSectionEdgeCases:
 
     def test_subprocess_tracker_captures_ytdlp_utils_popen(self) -> None:
         """_SubprocessTracker가 yt_dlp.utils.Popen 및 external.Popen 인스턴스를 정확히 가로채 추적 풀에 등록하는지 검증."""
+        import sys
+
         import yt_dlp.utils
 
         from chzzk_downloader.gui.workers import _SubprocessTracker
 
         tracked: set = set()
         with _SubprocessTracker(tracked):
-            # yt-dlp의 실제 Popen 클래스를 사용해 더미 서브프로세스 기동
-            proc = yt_dlp.utils.Popen(["cmd.exe", "/c", "exit 0"])
+            # yt-dlp의 실제 Popen 클래스를 사용해 더미 서브프로세스 기동 (크로스 플랫폼 지원)
+            proc = yt_dlp.utils.Popen([sys.executable, "-c", "pass"])
             proc.wait()
 
         assert len(tracked) == 1
@@ -1481,6 +1483,63 @@ class TestSectionEdgeCases:
         assert duration == 45.5
         assert size == 1234567
 
+    def test_card_close_safely_detaches_media_probe_worker_without_blocking(
+        self, qtbot: Any, tmp_path: Path
+    ) -> None:
+        """카드 종료 시 실행 중인 MediaProbeWorker가 terminate/wait 블로킹 없이 분리 보관되고 정상 정리되는지 검증."""
+        import threading
+
+        from chzzk_downloader.gui.task_card import (
+            _DETACHED_PROBE_WORKERS,
+            TaskCardWidget,
+        )
+        from chzzk_downloader.gui.workers import MediaProbeWorker
+
+        fake_file = tmp_path / "probe_test.mp4"
+        fake_file.write_bytes(b"test data")
+
+        card = TaskCardWidget("https://chzzk.naver.com/video/v_probe_detach")
+        qtbot.addWidget(card)
+
+        release_event = threading.Event()
+
+        class SlowProbeWorker(MediaProbeWorker):
+            def run(self) -> None:
+                release_event.wait(timeout=2.0)
+                super().run()
+
+        worker = SlowProbeWorker("task-probe-test", fake_file)
+        card.attach_probe_worker(worker)
+
+        callback_called = False
+
+        def _spy_on_media_probed(*args: Any) -> None:
+            nonlocal callback_called
+            callback_called = True
+
+        worker.probed.connect(_spy_on_media_probed)
+        worker.start()
+
+        qtbot.waitUntil(lambda: worker.isRunning(), timeout=1000)
+
+        # 카드 닫기 (메인 스레드 블로킹 없이 즉시 반환)
+        card.close()
+
+        # 분리 보관 집합에 등록되었는지 확인
+        assert worker in _DETACHED_PROBE_WORKERS
+
+        # 워커 재개 및 자연 종료 유도
+        release_event.set()
+
+        # 워커 종료 후 보관 집합에서 안전하게 해제되는지 확인
+        qtbot.waitUntil(
+            lambda: worker not in _DETACHED_PROBE_WORKERS,
+            timeout=3000,
+        )
+
+        # 닫힌 카드의 콜백은 시그널 해제로 인해 실행되지 않아야 함
+        assert not callback_called
+
     def test_subprocess_tracker_enforces_utf8_and_replace_on_text_pipes(
         self, monkeypatch: Any
     ) -> None:
@@ -1497,9 +1556,11 @@ class TestSectionEdgeCases:
 
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
 
+        import sys
+
         tracked: set[Any] = set()
         with _SubprocessTracker(tracked):
-            subprocess.Popen(["cmd.exe"], text=True)
+            subprocess.Popen([sys.executable, "-c", "pass"], text=True)
 
         assert captured_kwargs.get("encoding") == "utf-8"
         assert captured_kwargs.get("errors") == "replace"

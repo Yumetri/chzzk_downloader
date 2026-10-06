@@ -49,6 +49,7 @@ from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
 
 _DETACHED_LOADERS: set[QThread] = set()
+_DETACHED_PROBE_WORKERS: set[QThread] = set()
 
 
 def _delete_file_safely(file_path: Path | None) -> bool:
@@ -1129,7 +1130,7 @@ class TaskCardWidget(QFrame):
         super().closeEvent(event)
 
     def _detach_probe_worker(self) -> None:
-        """실행 중인 미디어 프로빙 워커를 안전하게 대기 및 종료합니다."""
+        """실행 중인 미디어 프로빙 워커를 안전하게 분리하여 백그라운드 종료를 대기하도록 보존합니다."""
         worker = self._probe_worker
         self._probe_worker = None
         if worker is not None:
@@ -1138,8 +1139,25 @@ class TaskCardWidget(QFrame):
                     worker.probed.disconnect()
                 except (TypeError, RuntimeError):
                     pass
-                worker.terminate()
-                worker.wait(1000)
+                try:
+                    worker.failed.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                try:
+                    worker.finished.disconnect(self._on_probe_finished)
+                except (TypeError, RuntimeError):
+                    pass
+                worker.setParent(None)
+                _DETACHED_PROBE_WORKERS.add(worker)
+                worker.finished.connect(
+                    lambda ref=worker: _DETACHED_PROBE_WORKERS.discard(ref)
+                )
+                worker.finished.connect(worker.deleteLater)
+
+    def attach_probe_worker(self, worker: Any) -> None:
+        """비동기 미디어 프로빙 워커를 카드에 등록합니다."""
+        self._detach_probe_worker()
+        self._probe_worker = worker
 
     def _load_thumbnail(self, url: str) -> None:
         """비동기로 썸네일 이미지를 다운로드하여 라벨에 표시합니다."""
