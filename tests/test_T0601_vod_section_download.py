@@ -2085,3 +2085,197 @@ class TestSectionEdgeCases:
         assert task_id == "task-999"
         assert success is True
         assert out_path == str(fake_dst)
+
+    def test_progress_bar_fixed_width_unaffected_by_metrics_update(
+        self, qtbot: Any
+    ) -> None:
+        """3번 위치의 속도/ETA 텍스트 변경에도 4번 위치 진행바 너비가 변하지 않고 고정되는지 검증."""
+        from chzzk_downloader.core.task_models import TaskProgress, TaskStatus
+        from chzzk_downloader.gui.task_card import TaskCardWidget
+
+        card = TaskCardWidget(raw_url="https://chzzk.naver.com/video/12345")
+        qtbot.addWidget(card)
+        card.setFixedWidth(500)
+        card.show()
+        card.set_task_status(TaskStatus.DOWNLOADING)
+
+        # 4번 위치 진행바 폭 확인
+        initial_width = card.progress_bar.width()
+        assert (
+            card.progress_bar.minimumWidth() == card.progress_bar.maximumWidth() == 140
+        )
+        assert (
+            card.stopped_progress_bar.minimumWidth()
+            == card.stopped_progress_bar.maximumWidth()
+            == 120
+        )
+        assert card.pct_label.minimumWidth() == card.pct_label.maximumWidth() == 36
+        assert (
+            card.stopped_pct_label.minimumWidth()
+            == card.stopped_pct_label.maximumWidth()
+            == 36
+        )
+
+        # 짧은 메트릭 (ETA 없음)
+        prog_short = TaskProgress(
+            task_id="task-1",
+            percentage=20.0,
+            speed_str="1.2 MB/s",
+            downloaded_bytes=10485760,
+            eta_seconds=0,
+            eta_str="",
+        )
+        card.update_progress(prog_short)
+        card.adjustSize()
+        width_after_short = card.progress_bar.width()
+
+        # 긴 메트릭 (ETA 포함)
+        prog_long = TaskProgress(
+            task_id="task-1",
+            percentage=25.0,
+            speed_str="123.45 MB/s",
+            downloaded_bytes=1320000000,
+            eta_seconds=3661,
+            eta_str="01:01:01",
+        )
+        card.update_progress(prog_long)
+        card.adjustSize()
+        width_after_long = card.progress_bar.width()
+
+        assert initial_width == width_after_short == width_after_long == 140
+
+    def test_section_spinbox_arrow_assets_exist_and_configured(
+        self, qtbot: Any
+    ) -> None:
+        """구간 설정 팝업에 화살표 애셋이 존재하고 QSS에 image: url로 바인딩되어 있는지 검증."""
+        from pathlib import Path
+
+        from chzzk_downloader.gui.section_popup import _DOWN_SVG, _UP_SVG, SectionPopup
+
+        assert Path(_UP_SVG).is_file(), f"애셋 파일 누락: {_UP_SVG}"
+        assert Path(_DOWN_SVG).is_file(), f"애셋 파일 누락: {_DOWN_SVG}"
+
+        popup = SectionPopup()
+        qtbot.addWidget(popup)
+        qss = popup.styleSheet()
+        assert "arrow_up.svg" in qss
+        assert "arrow_down.svg" in qss
+        assert "QSpinBox::up-arrow" in qss
+        assert "QSpinBox::down-arrow" in qss
+
+    def test_section_time_step_clamped_to_video_duration(self, qtbot: Any) -> None:
+        """영상 길이가 01:30:00(5400초)일 때 종료 시간 증감 시 5400초를 초과하지 않고 정확히 clamp되는지 검증."""
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        popup = SectionPopup()
+        qtbot.addWidget(popup)
+        popup.set_duration(5400.0)  # 01:30:00
+        popup.end_check.setChecked(True)
+
+        end_widget = popup.end_edit
+        # 기본 종료 시간은 duration(01:30:00.00)
+        assert abs(end_widget.total_seconds() - 5400.0) < 0.01
+
+        # 종료 시간에서 초를 위로 올려도 5400.0을 초과하지 않아야 함
+        end_widget.sec_spin.stepBy(1)
+        assert abs(end_widget.total_seconds() - 5400.0) < 0.01
+
+        # 분을 위로 올려도 5400.0을 초과하지 않아야 함
+        end_widget.min_spin.stepBy(1)
+        assert abs(end_widget.total_seconds() - 5400.0) < 0.01
+
+        # 시간을 위로 올려도 5400.0을 초과하지 않아야 함
+        end_widget.hour_spin.stepBy(1)
+        assert abs(end_widget.total_seconds() - 5400.0) < 0.01
+
+        # 아래로 1분 내리면 01:29:00.00으로 정상 감소
+        end_widget.min_spin.stepBy(-1)
+        assert abs(end_widget.total_seconds() - 5340.0) < 0.01
+
+    def test_section_time_step_carry_and_borrow_within_bounds(self, qtbot: Any) -> None:
+        """59초에서 올리면 자리올림되고, 0초에서 내리면 자리내림되며 음수로 가지 않는지 검증."""
+        from chzzk_downloader.gui.section_popup import SectionTimeWidget
+
+        time_widget = SectionTimeWidget("00:00:59.00")
+        qtbot.addWidget(time_widget)
+        time_widget.set_max_seconds(3600.0)
+
+        # 59초에서 1초 올리면 1분 0초
+        time_widget.sec_spin.stepBy(1)
+        assert abs(time_widget.total_seconds() - 60.0) < 0.01
+        assert time_widget.min_spin.value() == 1
+        assert abs(time_widget.sec_spin.value() - 0.0) < 0.01
+
+        # 1분 0초에서 1초 내리면 59초
+        time_widget.sec_spin.stepBy(-1)
+        assert abs(time_widget.total_seconds() - 59.0) < 0.01
+        assert time_widget.min_spin.value() == 0
+        assert abs(time_widget.sec_spin.value() - 59.0) < 0.01
+
+        # 0초 이하로 내려가지 않음
+        time_widget.setText("00:00:00.00")
+        time_widget.sec_spin.stepBy(-1)
+        assert abs(time_widget.total_seconds() - 0.0) < 0.01
+        assert time_widget.hour_spin.value() == 0
+        assert time_widget.min_spin.value() == 0
+        assert abs(time_widget.sec_spin.value() - 0.0) < 0.01
+
+    def test_set_section_range_not_corrupted_by_previous_bounds(
+        self, qtbot: Any
+    ) -> None:
+        """이전 종료 시각보다 큰 시작 시각으로 재설정 시 값이 이전 상한에 clamp되어 왜곡되지 않는지 검증."""
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        popup = SectionPopup()
+        qtbot.addWidget(popup)
+        popup.set_duration(100.0)
+        popup.set_section_range(10.0, 20.0)
+        assert popup.get_section_range() == (10.0, 20.0)
+
+        # 이전 end(20.0)보다 큰 start(50.0)로 재설정
+        popup.set_section_range(50.0, 80.0)
+        assert popup.get_section_range() == (50.0, 80.0)
+
+    def test_fast_repeat_mixin_methods_not_shadowed_by_mro(self) -> None:
+        """_FastRepeatSpinBoxMixin의 mousePressEvent가 MRO 순서에 의해 섀도잉되지 않는지 검증."""
+        from chzzk_downloader.gui.section_time_widget import (
+            _FastRepeatSpinBoxMixin,
+            _ZeroPaddedDoubleSpinBox,
+            _ZeroPaddedSpinBox,
+        )
+
+        assert (
+            _ZeroPaddedSpinBox.mousePressEvent
+            == _FastRepeatSpinBoxMixin.mousePressEvent
+        )
+        assert (
+            _ZeroPaddedDoubleSpinBox.mousePressEvent
+            == _FastRepeatSpinBoxMixin.mousePressEvent
+        )
+
+    def test_zero_or_unknown_duration_does_not_brick_spinboxes(
+        self, qtbot: Any
+    ) -> None:
+        """duration이 0이거나 None인 VOD에서도 스핀박스가 0초로 고착되지 않고 정상 증감되는지 검증."""
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        popup = SectionPopup()
+        qtbot.addWidget(popup)
+        popup.set_duration(0.0)
+        popup.end_check.setChecked(True)
+
+        popup.end_edit.sec_spin.stepBy(10)
+        assert popup.end_edit.total_seconds() == 10.0
+
+    def test_repeat_timer_stops_on_hide(self, qtbot: Any) -> None:
+        """위젯 hide 시 반복 타이머가 정상 정지되어 숨김 상태에서의 오발화가 방지되는지 검증."""
+        from chzzk_downloader.gui.section_time_widget import _ZeroPaddedSpinBox
+
+        spin = _ZeroPaddedSpinBox()
+        qtbot.addWidget(spin)
+        spin.show()
+        spin.start_repeat_for_test(step=1, interval_ms=50)
+        assert spin.is_repeating() is True
+
+        spin.hide()
+        assert spin.is_repeating() is False

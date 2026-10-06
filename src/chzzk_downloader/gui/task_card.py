@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -681,8 +682,10 @@ class TaskCardWidget(QFrame):
 
         self.progress_bar = QProgressBar(self.vod_downloading_container)
         self.progress_bar.setFixedHeight(8)
-        self.progress_bar.setMinimumWidth(100)
-        self.progress_bar.setMaximumWidth(160)
+        self.progress_bar.setFixedWidth(140)
+        self.progress_bar.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
@@ -694,9 +697,8 @@ class TaskCardWidget(QFrame):
         self.progress_bar.installEventFilter(self)
 
         self.pct_label = QLabel("0%", self.vod_downloading_container)
-        self.pct_label.setStyleSheet(
-            "color: #d1d5db; font-size: 11px; min-width: 24px;"
-        )
+        self.pct_label.setFixedWidth(36)
+        self.pct_label.setStyleSheet("color: #d1d5db; font-size: 11px;")
         self.pct_label.installEventFilter(self)
 
         vod_downloading_layout.addWidget(self.vod_chzzk_badge)
@@ -810,8 +812,10 @@ class TaskCardWidget(QFrame):
 
         self.stopped_progress_bar = QProgressBar(self.stopped_container)
         self.stopped_progress_bar.setFixedHeight(8)
-        self.stopped_progress_bar.setMinimumWidth(80)
-        self.stopped_progress_bar.setMaximumWidth(140)
+        self.stopped_progress_bar.setFixedWidth(120)
+        self.stopped_progress_bar.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.stopped_progress_bar.setRange(0, 100)
         self.stopped_progress_bar.setValue(0)
         self.stopped_progress_bar.setTextVisible(False)
@@ -821,9 +825,8 @@ class TaskCardWidget(QFrame):
         )
 
         self.stopped_pct_label = QLabel("0%", self.stopped_container)
-        self.stopped_pct_label.setStyleSheet(
-            "color: #94a3b8; font-size: 11px; min-width: 24px;"
-        )
+        self.stopped_pct_label.setFixedWidth(36)
+        self.stopped_pct_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
 
         stopped_layout.addWidget(self.stopped_chzzk_badge)
         stopped_layout.addWidget(self.stopped_retry_btn)
