@@ -439,6 +439,7 @@ def test_task_card_c02_c03_c08_vod_live_specifications(qtbot, tmp_path):
     card_ready._show_hover_toolbar(True)
 
     assert hasattr(card_ready, "ready_stop_btn") is False
+    assert card_ready.section_btn.isVisible() is True
     assert card_ready.open_folder_btn.isVisible() is True
     assert card_ready.delete_btn.isVisible() is True
     assert card_ready.play_btn.isHidden() is True

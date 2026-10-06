@@ -78,14 +78,20 @@ GUI 스레드에서 `subprocess.*`, `urlopen`, `mkdir`, `stat`, `exists`, FFmpeg
 - 브랜치: `<이슈번호>-<타입>-<설명>` / 커밋: `<타입>(<스코프>): <설명> (#<이슈번호>)`
 - push, 브랜치 전환, PR 코멘트는 사용자가 승인한 뒤에만 한다.
 
-## 9. 협업 워크플로우 및 프로세스 규칙 (`docs/AGENT_WORKFLOW.md` 준수)
+## 9. 협업 라이프사이클 7단계 상태 머신 (`docs/AGENT_WORKFLOW.md` 준수)
 
-에이전트는 독단적으로 작업을 완결 짓지 않으며, 모든 주요 단계마다 사용자의 피드백과 명시적 승인을 거친다:
+에이전트는 모든 이슈·기능 구현 시 임의로 단계를 건너뛰지 않고 아래 P1~P7 상태 머신을 순차적으로 전이한다:
 
-1. **사전 승인 원칙**: 기능 구현, TDD, 적대적 검증 착수 전 **구체적인 작업 계획과 검증 시나리오를 먼저 브리핑하고 사용자의 동의/승인을 받은 후 진행**한다.
-2. **질의/피드백 우선 대응**: 사용자 질문·피드백 제시 시 임의로 코드를 수정하거나 명령을 실행하지 않고, 명확한 기술적 답변과 대안 계획을 제시하여 승인을 받는다.
-3. **서브에이전트 적대적 검증**: 동시성, 상태 머신, 워커 수명주기 등 핵심 로직 수정 시 서브에이전트를 가동해 적대적 엣지 케이스를 감사하고, TDD로 보강한다.
-4. **HTML 분석 보고서 (`explain-diff-html`)**: 유의미한 아키텍처/설계 변경 완료 시 세션 종료 전 **HTML 보고서 생성 여부를 사용자에게 확인받고 생성**한다 (`reports/`).
-5. **세션 인계 규격**: 세션 종료 시 `AGENT_WORKFLOW.md` §3의 6대 표준 양식(변경된 파일, 요약, 검증 상태, 미해결 항목, HTML 보고서 링크, 스킬 제안)으로 정형화하여 출력한다.
-6. **UI 카탈로그 4자 동기화**: UI 피드백(모달 M, 토스트 T, 작업 카드 C) 추가·수정 시 `docs/UI_FEEDBACK_CATALOG.md` (SSOT), `feedback_showcase.py`, `tools/preview_ui_feedbacks.py`, `tests/test_ui_feedback_catalog.py`의 4자 일괄 동기화를 엄격히 준수한다.
+| Phase | 단계명 | 진입 및 완료 가드 (Transition Guard) | 핵심 산출물 |
+| :--- | :--- | :--- | :--- |
+| **P1** | **Plan & Briefing** | 사용자 요구 분석 ➔ 기술적 답변 및 작업 계획·TDD 시나리오 브리핑 ➔ 사용자 승인 | 계획 브리핑 |
+| **P2** | **TDD Red** | 프로덕션 수정 전 실패하는 테스트 작성 ➔ `pytest` 실패(Red) 실행 로그 기계 확인 | 실패 테스트 |
+| **P3** | **TDD Green** | 최소 프로덕션 코드 구현 ➔ 해당 테스트 통과(Green) | 통과 코드 |
+| **P4** | **Adversarial Audit** | **에이전트 자발적 서브에이전트 가동** ➔ 엣지 케이스 감사 ➔ 경계값 TDD 보강 | 감사 리포트 & 보강 테스트 |
+| **P5** | **4대 기계 검증** | `ruff`, `pyrefly`, `check_rules.py`, `pytest` 전수 실행 ➔ 0 error 통과 | 4대 검증 로그 |
+| **P6** | **Handoff & Report** | 아키텍처 변경 시 `reports/*.html` 생성 ➔ `AGENT_WORKFLOW.md` §3 6대 Handoff 양식 출력 | HTML 보고서, Handoff |
+| **P7** | **Ship** | 사용자 최종 승인 ➔ Git 커밋, 데스크톱 동기화(`desktop-sync`, 규칙·문서 갱신 시 작업 공간 상호 업데이트 필수), 푸시/PR | Git 커밋 & PR |
 
+- **규칙 및 문서 동기화 원칙**: 작업 완료 시 규칙(`AGENTS.md`) 및 관련 문서(`docs/`)의 갱신이 있었을 경우, 데스크톱(`Desktop/chzzk_downloader`)과 작업 공간(`Desktop/code_training/chzzk_downloader`) 양쪽에 빠짐없이 상호 업데이트하여 항상 동일한 최신 기준을 유지한다.
+- **UI 카탈로그 4자 동기화**: UI 피드백(모달 M, 토스트 T, 작업 카드 C) 추가·수정 시 `docs/UI_FEEDBACK_CATALOG.md` (SSOT), `feedback_showcase.py`, `tools/preview_ui_feedbacks.py`, `tests/test_ui_feedback_catalog.py`의 4자 일괄 동기화를 엄격히 준수한다.
+- **기계 검증 가드**: 상태 전이 및 완료 검증은 `tools/check_workflow.py`로 기계적으로 확인한다.

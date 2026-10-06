@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
 
         self.task_manager = TaskManager(max_concurrent_vod=3)
         self._download_workers: dict[str, VodDownloadWorker] = {}
+        self._remux_workers: dict[str, Any] = {}
         self._pending_vod_starts: dict[str, TaskSpec] = {}
         self._init_task_manager()
 
@@ -178,6 +179,20 @@ class MainWindow(QMainWindow):
         self._url_context_menu: QMenu | None = None
         self.current_vod_info: VodInfo | None = None
         self._init_ui()
+
+    def register_remux_worker(self, worker: Any) -> None:
+        """리먹싱 워커를 관리 목록에 등록합니다."""
+        self._remux_workers[worker.task_id] = worker
+
+    def has_active_remux_worker(self, task_id: str) -> bool:
+        """특정 작업에 대해 활성 리먹싱 워커가 존재하는지 확인합니다."""
+        worker = self._remux_workers.get(task_id)
+        return worker is not None and worker.isRunning()
+
+    @property
+    def active_remux_worker_count(self) -> int:
+        """현재 등록된 리먹싱 워커의 개수를 반환합니다."""
+        return len(self._remux_workers)
 
     def _init_task_manager(self) -> None:
         """TaskManager 시그널들을 MainWindow 슬롯에 바인딩합니다."""
@@ -339,6 +354,27 @@ class MainWindow(QMainWindow):
                 if not sip.isdeleted(card._info_win):
                     card._info_win.close()
                 card._info_win = None
+
+        # 분리 보관 중인 보조 워커(미디어 프로빙/썸네일) 안전 대기
+        from chzzk_downloader.gui.task_card import (
+            _DETACHED_LOADERS,
+            _DETACHED_PROBE_WORKERS,
+        )
+
+        for probe_w in list(_DETACHED_PROBE_WORKERS):
+            if probe_w.isRunning():
+                probe_w.wait(1000)
+        _DETACHED_PROBE_WORKERS.clear()
+
+        for loader in list(_DETACHED_LOADERS):
+            if loader.isRunning():
+                loader.wait(1000)
+        _DETACHED_LOADERS.clear()
+
+        for remux_w in list(self._remux_workers.values()):
+            if remux_w.isRunning():
+                remux_w.wait(1000)
+        self._remux_workers.clear()
 
         super().closeEvent(event)
 
@@ -652,6 +688,12 @@ class MainWindow(QMainWindow):
 
         self._start_vod_check(card, video_no)
 
+    def apply_vod_check_result(
+        self, info: VodInfo, card: TaskCardWidget | None = None
+    ) -> None:
+        """VOD 정보 조회 성공 결과를 카드에 반영하고 설정에 따라 후속 작업을 처리합니다."""
+        self._on_vod_check_success(info, card)
+
     def _on_vod_check_success(
         self, info: VodInfo, card: TaskCardWidget | None = None
     ) -> None:
@@ -666,11 +708,13 @@ class MainWindow(QMainWindow):
             return
         card.update_with_vod_info(info)
 
-        # VOD 자동 다운로드 분기 (T0109)
+        # VOD 자동 다운로드 분기 (T0109, T0601)
+        # 방안 B: 정식 VOD(구간 다운로드 가능)는 구간 설정을 위해 항상 READY 상태로 대기
+        # 빠른 다시보기(구간 설정 불가)인 경우에만 vod_auto_download 설정에 따라 즉시 시작
         from chzzk_downloader.core.settings_manager import get_current_settings
 
         settings = get_current_settings()
-        if settings.vod_auto_download:
+        if settings.vod_auto_download and not info.can_section_download:
             card.trigger_start_download()
 
     def _on_vod_check_failed(
@@ -985,13 +1029,15 @@ class MainWindow(QMainWindow):
 
     def _on_card_retry_requested(self, task_id: str) -> None:
         """카드의 재시도 요청을 수신하여 TaskManager를 통해 작업 재개를 트리거합니다."""
+        card = self.task_list_widget.find_task_card_by_id(task_id)
+        if card is not None:
+            card.detach_probe_worker()
+
         worker = self._download_workers.get(task_id)
         if worker is not None and worker.isRunning():
             spec = self.task_manager.get_task_spec(task_id)
-            if spec is None:
-                card = self.task_list_widget.find_task_card_by_id(task_id)
-                if card is not None:
-                    spec = card.get_task_spec()
+            if spec is None and card is not None:
+                spec = card.get_task_spec()
             if spec is not None:
                 self._pending_vod_starts[task_id] = spec
                 self.toast.show_toast(
@@ -1043,7 +1089,85 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.task_manager.complete_task(task_id, str(target_path))
+        from chzzk_downloader.gui.media_workers import MediaRemuxWorker
+
+        existing_worker = self._remux_workers.get(task_id)
+        if existing_worker is not None and existing_worker.isRunning():
+            return
+
+        remux_dst = target_path.with_name(
+            f"{target_path.stem}.final{target_path.suffix}"
+        )
+        worker = MediaRemuxWorker(task_id, target_path, remux_dst, parent=self)
+        self._remux_workers[task_id] = worker
+
+        worker.remux_finished.connect(
+            lambda tid, success, out_path, tp=target_path, w=worker: (
+                self.handle_remux_finished(w, tid, success, out_path, tp)
+            )
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def handle_remux_finished(
+        self,
+        worker: Any,
+        tid: str,
+        success: bool,
+        out_path_str: str,
+        target_path: Path,
+    ) -> None:
+        """리먹싱 워커 완료 이벤트를 처리하고 최종 파일을 반영합니다."""
+        if self._remux_workers.get(tid) is not worker:
+            final_out = Path(out_path_str)
+            if final_out.exists() and final_out != target_path:
+                try:
+                    final_out.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return
+
+        self._remux_workers.pop(tid, None)
+        final_out = Path(out_path_str)
+
+        current_status = self.task_manager.get_task_status(tid)
+        card = self.task_list_widget.find_task_card_by_id(tid)
+
+        invalid_for_completion = (
+            current_status is None
+            or card is None
+            or card.is_deleted
+            or current_status
+            in (
+                TaskStatus.DOWNLOADING,
+                TaskStatus.ANALYZING,
+                TaskStatus.QUEUED,
+                TaskStatus.READY,
+            )
+        )
+        if invalid_for_completion:
+            if final_out.exists() and final_out != target_path:
+                try:
+                    final_out.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return
+
+        if success and final_out.exists() and final_out != target_path:
+            try:
+                import os
+
+                os.replace(final_out, target_path)
+            except OSError:
+                pass
+        elif final_out.exists() and final_out != target_path:
+            try:
+                final_out.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        if target_path.exists():
+            self.task_manager.complete_task(tid, str(target_path))
 
     def _on_task_removed(self, task_id: str) -> None:
         """TaskManager로부터 작업 제거 알림을 수신하여 목록에서 카드를 제거합니다."""
@@ -1052,6 +1176,7 @@ class MainWindow(QMainWindow):
             worker.cancel()
         else:
             self._download_workers.pop(task_id, None)
+        self._remux_workers.pop(task_id, None)
         card = self.task_list_widget.find_task_card_by_id(task_id)
         if card is not None and not card.is_deleted and not sip.isdeleted(card):
             self.task_list_widget.remove_task_card(card)

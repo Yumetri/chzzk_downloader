@@ -44,6 +44,9 @@ class VodInfo:
     duration: int = 0
     formats: list[VodFormatInfo] = field(default_factory=list)
     live_open_date: str = ""  # YYYY-MM-DD (라이브 시작일)
+    can_section_download: bool = (
+        True  # 정식 VOD(DASH)는 True, 빠른 다시보기(HLS)는 False
+    )
 
     @property
     def display_name(self) -> str:
@@ -101,14 +104,35 @@ def _ensure_chzzk_hook() -> None:
                 and isinstance(res["content"], dict)
             ):
                 self._chzzk_live_open_date = res["content"].get("liveOpenDate")
+                self._chzzk_in_key = res["content"].get("inKey")
             return res
 
+        from yt_dlp.utils import ExtractorError
+
         def _hooked_real_extract(self: Any, url: str) -> Any:
-            self._chzzk_live_open_date = None
-            info = orig_real_extract(self, url)
-            if getattr(self, "_chzzk_live_open_date", None):
-                info["live_open_date"] = self._chzzk_live_open_date
-            return info
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    self._chzzk_live_open_date = None
+                    self._chzzk_in_key = None
+                    info = orig_real_extract(self, url)
+                    if self._chzzk_live_open_date:
+                        info["live_open_date"] = self._chzzk_live_open_date
+                    info["in_key"] = self._chzzk_in_key
+                    return info
+                except (ExtractorError, DownloadError, OSError) as exc:
+                    exc_str = str(exc).lower()
+                    if (
+                        "404" in exc_str
+                        or "not found" in exc_str
+                        or "login" in exc_str
+                        or "존재하지" in exc_str
+                        or attempt == max_attempts - 1
+                    ):
+                        raise
+                    import threading
+
+                    threading.Event().wait(0.5 * (attempt + 1))
 
         CHZZKVideoIE._download_json = _hooked_download_json
         CHZZKVideoIE._real_extract = _hooked_real_extract
@@ -133,7 +157,36 @@ def _ensure_chzzk_hook() -> None:
         InfoExtractor._parse_mpd_periods = _hooked_parse_mpd_periods
 
         _chzzk_hook_installed = True
-    except Exception:
+    except (ImportError, AttributeError):
+        pass
+
+
+def prepare_ytdlp_ffmpeg() -> None:
+    """yt-dlp 실행 전 FFmpeg 바이너리 환경 및 호환성 훅을 완벽히 준비합니다.
+
+    1. 시스템 내 가용한 FFmpeg 바이너리 디렉터리를 os.environ['PATH']에 최우선 순위로 주입합니다.
+    2. yt-dlp의 FFmpegPostProcessor._version_cache를 무효화하여
+       이전 미설치 판정('ffmpeg': False)으로 인한 구간 다운로드 오류를 방지합니다.
+    3. 치지직 DASH MPD 호환 훅(_ensure_chzzk_hook)을 함께 보장합니다.
+    """
+    import os
+
+    from chzzk_downloader.core.ffmpeg_manager import get_ffmpeg_path
+
+    _ensure_chzzk_hook()
+
+    ffmpeg_bin = get_ffmpeg_path()
+    if ffmpeg_bin:
+        ffmpeg_dir = str(ffmpeg_bin.parent)
+        current_path = os.environ.get("PATH", "")
+        if ffmpeg_dir not in current_path.split(os.pathsep):
+            os.environ["PATH"] = f"{ffmpeg_dir}{os.pathsep}{current_path}"
+
+    try:
+        from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
+
+        FFmpegPostProcessor._version_cache.clear()
+    except (ImportError, AttributeError):
         pass
 
 
@@ -156,6 +209,29 @@ def _parse_live_open_date(data: Mapping[str, Any]) -> str:
     return ""
 
 
+def _determine_section_support(
+    data: Mapping[str, Any], formats: list[VodFormatInfo]
+) -> bool:
+    """VOD 메타데이터 및 스트림 형식을 분석하여 구간 다운로드 지원 여부를 판별합니다."""
+    if data.get("can_section_download") is False:
+        return False
+    if "in_key" in data and data.get("in_key") is None:
+        # 치지직 빠른 다시보기(HLS 임시 스트림, inKey 누락)
+        return False
+    if formats:
+        has_mpd = any(
+            "mpd" in fmt.url.lower() or "dash" in fmt.format_id.lower()
+            for fmt in formats
+        )
+        all_hls = all(
+            "m3u8" in fmt.url.lower() or "hls" in fmt.format_id.lower()
+            for fmt in formats
+        )
+        if all_hls and not has_mpd:
+            return False
+    return True
+
+
 def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInfo:
     """yt-dlp를 사용하여 VOD 메타데이터를 추출합니다.
 
@@ -170,7 +246,7 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
         VodNotFoundError: 영상이 존재하지 않거나 삭제/비공개인 경우
         YtDlpError: 네트워크 오류 또는 yt-dlp 처리 오류 발생 시
     """
-    _ensure_chzzk_hook()
+    prepare_ytdlp_ffmpeg()
 
     opts: dict[str, Any] = {
         "skip_download": True,
@@ -235,6 +311,7 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
     duration = int(data.get("duration") or 0)
 
     live_open_date = _parse_live_open_date(data)
+    can_section_download = _determine_section_support(data, formats_list)
 
     return VodInfo(
         video_no=video_no,
@@ -244,4 +321,5 @@ def extract_vod_info(url: str, ydl_opts: dict[str, Any] | None = None) -> VodInf
         duration=duration,
         formats=formats_list,
         live_open_date=live_open_date,
+        can_section_download=can_section_download,
     )

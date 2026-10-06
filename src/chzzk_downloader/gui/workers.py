@@ -1,5 +1,7 @@
 import glob
-import math
+import logging
+import subprocess
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -7,7 +9,6 @@ from typing import Any, cast
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from chzzk_downloader.config import DEFAULT_USER_AGENT
 from chzzk_downloader.core.task_models import TaskProgress, TaskSpec
 from chzzk_downloader.core.ytdlp import (
     VodInfo,
@@ -15,30 +16,66 @@ from chzzk_downloader.core.ytdlp import (
     YtDlpError,
     extract_vod_info,
 )
+from chzzk_downloader.core.ytdlp_opts import build_vod_download_opts
+from chzzk_downloader.gui.section_poller import (
+    SectionProgressPoller,
+    format_eta,
+    format_speed,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class _TrackerLocal(threading.local):
+    def __init__(self) -> None:
+        self.target_sets: list[set[Any]] = []
+
+
+_local_tracker = _TrackerLocal()
+_popen_lock = threading.Lock()
+_active_tracker_count = 0
+_orig_popen_init = subprocess.Popen.__init__
+
+
+def _tracked_popen_init(self_proc: subprocess.Popen, *args: Any, **kwargs: Any) -> None:
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+    _orig_popen_init(self_proc, *args, **kwargs)
+    for target in _local_tracker.target_sets:
+        target.add(self_proc)
+
+
+class _SubprocessTracker:
+    """yt-dlp 실행 중 기동되는 서브프로세스를 스레드별 격리 풀에 등록하는 컨텍스트 관리자."""
+
+    def __init__(self, target_set: set[Any]) -> None:
+        self.target_set = target_set
+
+    def __enter__(self) -> None:
+        global _active_tracker_count, _orig_popen_init
+        _local_tracker.target_sets.append(self.target_set)
+        with _popen_lock:
+            if _active_tracker_count == 0:
+                current_init = subprocess.Popen.__init__
+                if current_init is not _tracked_popen_init:
+                    _orig_popen_init = current_init
+                subprocess.Popen.__init__ = _tracked_popen_init  # type: ignore[method-assign]
+            _active_tracker_count += 1
+
+    def __exit__(self, *exc_info: Any) -> None:
+        global _active_tracker_count
+        if self.target_set in _local_tracker.target_sets:
+            _local_tracker.target_sets.remove(self.target_set)
+        with _popen_lock:
+            _active_tracker_count -= 1
+            if _active_tracker_count <= 0:
+                _active_tracker_count = 0
+                subprocess.Popen.__init__ = _orig_popen_init  # type: ignore[method-assign]
 
 
 class DownloadCancelledError(Exception):
     """다운로드가 사용자에 의해 취소되었을 때 발생하는 내부 예외."""
-
-
-def format_speed(speed: float) -> str:
-    """초당 바이트 수를 속도 문자열(예: '15.4 MB/s', '1.2 GB/s')로 변환합니다."""
-    if math.isnan(speed) or math.isinf(speed) or speed <= 0:
-        return "0.0 KB/s"
-    if speed < 1024 * 1024:
-        return f"{speed / 1024:.1f} KB/s"
-    if speed < 1024 * 1024 * 1024:
-        return f"{speed / (1024 * 1024):.1f} MB/s"
-    return f"{speed / (1024 * 1024 * 1024):.1f} GB/s"
-
-
-def format_eta(seconds: int) -> str:
-    """초 단위 시간을 ETA 문자열(예: '00:03:25')로 변환합니다."""
-    if seconds <= 0:
-        return "00:00:00"
-    m, s = divmod(seconds, 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 class VodCheckWorker(QThread):
@@ -61,9 +98,7 @@ class VodCheckWorker(QThread):
         try:
             info = extract_vod_info(url)
             self.finished_success.emit(info)
-        except VodNotFoundError as e:
-            self.finished_failed.emit(str(e))
-        except YtDlpError as e:
+        except (VodNotFoundError, YtDlpError) as e:
             self.finished_failed.emit(str(e))
         except Exception as e:
             self.finished_failed.emit(f"예기치 못한 오류: {e}")
@@ -137,80 +172,6 @@ class FFmpegBootstrapWorker(QThread):
             self.finished_bootstrap.emit(False, f"FFmpeg 준비 중 예외 발생: {e}")
 
 
-def build_vod_download_opts(task_spec: TaskSpec) -> dict[str, Any]:
-    """TaskSpec으로부터 yt-dlp 다운로드 옵션을 빌드합니다.
-
-    - 네이버 LiveCloud CDN 400 차단 방어 (Referer, User-Agent)
-    - 최신 FFmpeg(v6.1+)의 .m4v 거부 방어 (-extension_picky 0, -allowed_extensions ALL)
-    - 쿠키 세션 및 컨테이너 리먹스(mp4 등) 옵션 주입
-    """
-    save_path = Path(task_spec.save_path)
-    save_dir = save_path.parent
-    ext = task_spec.selected_ext or "mp4"
-
-    # 화질 선택 포맷 문자열
-    quality = task_spec.selected_quality
-    if quality and quality.lower() not in ("best", "최고 화질", "최고화질"):
-        format_str = f"bestvideo[format_id*={quality}]+bestaudio/best[format_id*={quality}]/bestvideo+bestaudio/best"
-    else:
-        format_str = "bestvideo+bestaudio/best"
-
-    # FFmpeg 경로 및 호환 인자 획득
-    from chzzk_downloader.core.ffmpeg_manager import (
-        get_ffmpeg_compatible_args,
-        get_ffmpeg_path,
-    )
-
-    ffmpeg_bin = get_ffmpeg_path()
-    compat_args = get_ffmpeg_compatible_args(ffmpeg_bin) or [
-        "-extension_picky",
-        "0",
-        "-allowed_extensions",
-        "ALL",
-    ]
-
-    escaped_stem = save_path.stem.replace("%", "%%")
-    opts: dict[str, Any] = {
-        "format": format_str,
-        "outtmpl": {"default": str(save_dir / f"{escaped_stem}.%(ext)s")},
-        "remuxvideo": ext,
-        "postprocessors": [
-            {
-                "key": "FFmpegVideoRemuxer",
-                "preferedformat": ext,
-            }
-        ],
-        "http_headers": {
-            "Referer": "https://chzzk.naver.com/",
-            "User-Agent": DEFAULT_USER_AGENT,
-        },
-        "postprocessor_args": {"ffmpeg": compat_args},
-        "downloader_args": {"ffmpeg": compat_args},
-        "quiet": True,
-        "no_warnings": True,
-        "nocheckcertificate": False,
-        "nopart": True,
-        "continuedl": True,
-        "socket_timeout": 30,
-        "retries": 10,
-        "fragment_retries": 15,
-        "file_access_retries": 5,
-    }
-
-    if ffmpeg_bin:
-        opts["ffmpeg_location"] = str(ffmpeg_bin)
-
-    from chzzk_downloader.core.cookie_manager import (
-        get_cookie_file_path,
-        has_valid_cookies,
-    )
-
-    if has_valid_cookies():
-        opts["cookiefile"] = str(get_cookie_file_path())
-
-    return opts
-
-
 class VodDownloadWorker(QThread):
     """백그라운드 스레드에서 VOD 다운로드를 실행하는 비동기 작업자 (T0111)."""
 
@@ -225,13 +186,26 @@ class VodDownloadWorker(QThread):
         self.task_id = task_spec.task_id
         self._is_cancelled = False
         self.created_paths: set[Path] = set()
+        self._subprocesses: set[Any] = set()
         self._last_progress_emit_time = 0.0
         self._start_time = 0.0
         self._ydl_opts: dict[str, Any] = {}
+        self._poller: SectionProgressPoller | None = None
 
     def cancel(self) -> None:
         """다운로드 작업을 안전하게 취소 요청합니다."""
         self._is_cancelled = True
+        if self._poller is not None:
+            self._poller.stop()
+        for proc in list(self._subprocesses):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def register_subprocess(self, proc: Any) -> None:
+        """취소 시 함께 종료할 활성 서브프로세스를 등록합니다."""
+        self._subprocesses.add(proc)
 
     @property
     def is_cancelled(self) -> bool:
@@ -294,21 +268,18 @@ class VodDownloadWorker(QThread):
             self.progress_updated.emit(progress)
 
     def _cleanup_partial_files(self, delete_media: bool = True) -> None:
-        """취소 또는 실패 시 생성된 파일들을 정리합니다. delete_media=False 시 유효한 미디어(> 0B)는 보존합니다."""
+        """취소 또는 실패 시 생성된 파일들을 정리합니다. 워커가 직접 생성한 파일만 삭제합니다."""
         target_path = Path(self.task_spec.save_path)
-        temp_ytdl = Path(str(target_path) + ".ytdl")
-        try:
-            if temp_ytdl.is_file() and delete_media:
-                temp_ytdl.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-        cleanup_targets = set(self.created_paths)
-        cleanup_targets.add(Path(str(target_path) + ".part"))
-        if delete_media:
-            cleanup_targets.add(target_path)
-
-        for p in cleanup_targets:
+        for temp_p in (
+            Path(str(target_path) + ".ytdl"),
+            Path(str(target_path) + ".part"),
+        ):
+            try:
+                if temp_p.is_file() and (delete_media or temp_p.stat().st_size == 0):
+                    temp_p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for p in set(self.created_paths):
             try:
                 if p.is_file() and (delete_media or p.stat().st_size == 0):
                     p.unlink(missing_ok=True)
@@ -318,6 +289,19 @@ class VodDownloadWorker(QThread):
     def cleanup_partial_files(self, delete_media: bool = True) -> None:
         """취소 또는 실패 시 워커가 생성한 임시 파일들을 안전하게 정리합니다 (공개 메서드)."""
         self._cleanup_partial_files(delete_media=delete_media)
+
+    def _resolve_final_path(self, target_path: Path) -> Path:
+        """리먹싱 등으로 확장자가 변경되었을 가능성을 확인하여 최종 경로를 찾습니다."""
+        if target_path.exists():
+            return target_path
+        escaped_stem = glob.escape(target_path.stem)
+        candidates = list(target_path.parent.glob(f"{escaped_stem}.*"))
+        valid = [
+            c
+            for c in candidates
+            if not c.name.endswith(".part") and not c.name.endswith(".ytdl")
+        ]
+        return valid[0] if valid else target_path
 
     def run(self) -> None:
         """yt-dlp 인스턴스를 구동하여 비디오를 다운로드합니다."""
@@ -332,47 +316,53 @@ class VodDownloadWorker(QThread):
             self._ydl_opts = build_vod_download_opts(self.task_spec)
             self._ydl_opts["progress_hooks"] = [self._progress_hook]
 
-            with yt_dlp.YoutubeDL(cast(Any, self._ydl_opts)) as ydl:
-                ydl.download([self.task_spec.video_url])
+            is_section = (
+                self.task_spec.section_start is not None
+                or self.task_spec.section_end is not None
+            )
+            if is_section:
+                self._poller = SectionProgressPoller(
+                    task_id=self.task_id,
+                    save_path=Path(self.task_spec.save_path),
+                    estimated_total_bytes=self.task_spec.expected_total_bytes,
+                    progress_callback=self.progress_updated.emit,
+                )
+                self._poller.start()
 
+            try:
+                with _SubprocessTracker(self._subprocesses):
+                    with yt_dlp.YoutubeDL(cast(Any, self._ydl_opts)) as ydl:
+                        ydl.download([self.task_spec.video_url])
+            finally:
+                if self._poller is not None:
+                    self._poller.stop()
+                    self._poller = None
+
+            is_section = (
+                self.task_spec.section_start is not None
+                or self.task_spec.section_end is not None
+            )
             if self._is_cancelled:
-                self._cleanup_partial_files(delete_media=False)
+                self._cleanup_partial_files(delete_media=is_section)
                 self.download_stopped.emit(self.task_id)
                 return
 
-            target_path = Path(self.task_spec.save_path)
-            final_path = target_path
-            if not target_path.exists():
-                # 리먹싱 등으로 인해 확장자 또는 포맷이 변경되었을 가능성 확인
-                escaped_stem = glob.escape(target_path.stem)
-                candidates = list(target_path.parent.glob(f"{escaped_stem}.*"))
-                valid = [
-                    c
-                    for c in candidates
-                    if not c.name.endswith(".part") and not c.name.endswith(".ytdl")
-                ]
-                if valid:
-                    final_path = valid[0]
-
+            final_path = self._resolve_final_path(Path(self.task_spec.save_path))
             if not final_path.exists():
-                raise FileNotFoundError(
-                    f"다운로드 대상 파일이 디스크에 생성되지 않았습니다: {final_path}"
-                )
+                raise FileNotFoundError(f"다운로드 파일 미생성: {final_path}")
 
-            file_size = final_path.stat().st_size
-            if file_size <= 0:
-                try:
-                    final_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"다운로드된 파일의 크기가 0바이트(빈 파일)입니다: {final_path}"
-                )
+            if final_path.stat().st_size <= 0:
+                final_path.unlink(missing_ok=True)
+                raise ValueError(f"다운로드 파일 0바이트: {final_path}")
 
             self.download_finished.emit(self.task_id, str(final_path))
 
         except DownloadCancelledError:
-            self._cleanup_partial_files(delete_media=False)
+            is_section = (
+                self.task_spec.section_start is not None
+                or self.task_spec.section_end is not None
+            )
+            self._cleanup_partial_files(delete_media=is_section)
             self.download_stopped.emit(self.task_id)
         except Exception as e:
             self._cleanup_partial_files(delete_media=False)
@@ -385,3 +375,20 @@ class VodDownloadWorker(QThread):
                     str(e),
                     traceback.format_exc(),
                 )
+
+
+from chzzk_downloader.gui.media_workers import (  # noqa: E402
+    MediaProbeWorker,
+    MediaRemuxWorker,
+)
+
+__all__ = [
+    "CookieVerifyWorker",
+    "DownloadCancelledError",
+    "FFmpegBootstrapWorker",
+    "MediaProbeWorker",
+    "MediaRemuxWorker",
+    "VodCheckWorker",
+    "VodDownloadWorker",
+    "_SubprocessTracker",
+]

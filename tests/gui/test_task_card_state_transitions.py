@@ -192,6 +192,7 @@ def test_vod_auto_download_on_downloads_with_settings_default_quality_and_extens
         video_title="자동 다운로드 화질 테스트",
         channel_name="스트리머A",
         duration=1800,
+        can_section_download=False,
         formats=[
             VodFormatInfo(format_id="1080p", height=1080, fps=60.0),
             VodFormatInfo(format_id="720p", height=720, fps=30.0),

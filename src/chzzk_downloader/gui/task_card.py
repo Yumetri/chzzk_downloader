@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -49,6 +50,7 @@ from chzzk_downloader.core.ytdlp import VodInfo
 from chzzk_downloader.gui.dialogs import ask_confirm_dialog
 
 _DETACHED_LOADERS: set[QThread] = set()
+_DETACHED_PROBE_WORKERS: set[QThread] = set()
 
 
 def _delete_file_safely(file_path: Path | None) -> bool:
@@ -128,10 +130,17 @@ def _delete_file_safely(file_path: Path | None) -> bool:
                 pass
 
         if not deleted:
-            try:
-                target.unlink(missing_ok=True)
-                deleted = True
-            except Exception:
+            import time
+
+            for attempt in range(3):
+                try:
+                    target.unlink(missing_ok=True)
+                    deleted = True
+                    break
+                except OSError:
+                    if attempt < 2:
+                        time.sleep(0.05)
+            if not deleted:
                 success = False
 
     return success
@@ -318,8 +327,14 @@ class TaskCardWidget(QFrame):
         self.is_deleted: bool = False
         self._has_started_download: bool = status == TaskStatus.DOWNLOADING
         self._stopped_without_file: bool = False
+        self._stopped_duration_str: str | None = None
+        self._is_stopped: bool = False
+        self._applied_section_start: float | None = None
+        self._applied_section_end: float | None = None
+        self._probe_worker: Any = None
         self._thumb_loader: ThumbnailLoaderThread | None = None
         self._info_win: Any = None
+        self.section_popup: Any = None
 
         self.custom_download_dir: Path | None = None
         self.target_path: Path | None = None
@@ -334,6 +349,20 @@ class TaskCardWidget(QFrame):
 
         if self.vod_info and self.vod_info.thumbnail_url:
             self._load_thumbnail(self.vod_info.thumbnail_url)
+
+    @property
+    def is_section_download(self) -> bool:
+        """구간 다운로드가 설정된 작업인지 여부를 반환합니다."""
+        if (
+            self._applied_section_start is not None
+            or self._applied_section_end is not None
+        ):
+            return True
+        if self.section_popup is not None:
+            s_start, s_end = self.section_popup.get_section_range()
+            if s_start is not None or s_end is not None:
+                return True
+        return False
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(400, 88)
@@ -602,8 +631,26 @@ class TaskCardWidget(QFrame):
         )
         self.start_btn.clicked.connect(self.trigger_start_download)
 
+        self.section_btn = QPushButton("구간 설정", self.ready_container)
+        self.section_btn.setToolTip(
+            "구간 설정 (키프레임 위치에 따라 수 초 오차가 발생할 수 있습니다)"
+        )
+        self.section_btn.setFixedHeight(22)
+        self.section_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.section_btn.setStyleSheet(
+            "QPushButton { background-color: #2a2a2a; color: #f3f4f6; border: 1px solid #4b5563; border-radius: 3px; padding: 1px 6px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #374151; }"
+        )
+        self.section_btn.clicked.connect(self._on_section_btn_clicked)
+
+        from chzzk_downloader.gui.section_popup import SectionPopup
+
+        self.section_popup = SectionPopup(self)
+        self.section_popup.section_changed.connect(self._on_section_validity_changed)
+
         ready_layout.addWidget(self.quality_combo)
         ready_layout.addWidget(self.ext_combo)
+        ready_layout.addWidget(self.section_btn)
         ready_layout.addWidget(self.folder_btn)
         ready_layout.addWidget(self.start_btn)
         self.ready_container.hide()
@@ -635,8 +682,10 @@ class TaskCardWidget(QFrame):
 
         self.progress_bar = QProgressBar(self.vod_downloading_container)
         self.progress_bar.setFixedHeight(8)
-        self.progress_bar.setMinimumWidth(100)
-        self.progress_bar.setMaximumWidth(160)
+        self.progress_bar.setFixedWidth(140)
+        self.progress_bar.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
@@ -648,9 +697,8 @@ class TaskCardWidget(QFrame):
         self.progress_bar.installEventFilter(self)
 
         self.pct_label = QLabel("0%", self.vod_downloading_container)
-        self.pct_label.setStyleSheet(
-            "color: #d1d5db; font-size: 11px; min-width: 24px;"
-        )
+        self.pct_label.setFixedWidth(36)
+        self.pct_label.setStyleSheet("color: #d1d5db; font-size: 11px;")
         self.pct_label.installEventFilter(self)
 
         vod_downloading_layout.addWidget(self.vod_chzzk_badge)
@@ -764,8 +812,10 @@ class TaskCardWidget(QFrame):
 
         self.stopped_progress_bar = QProgressBar(self.stopped_container)
         self.stopped_progress_bar.setFixedHeight(8)
-        self.stopped_progress_bar.setMinimumWidth(80)
-        self.stopped_progress_bar.setMaximumWidth(140)
+        self.stopped_progress_bar.setFixedWidth(120)
+        self.stopped_progress_bar.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.stopped_progress_bar.setRange(0, 100)
         self.stopped_progress_bar.setValue(0)
         self.stopped_progress_bar.setTextVisible(False)
@@ -775,9 +825,8 @@ class TaskCardWidget(QFrame):
         )
 
         self.stopped_pct_label = QLabel("0%", self.stopped_container)
-        self.stopped_pct_label.setStyleSheet(
-            "color: #94a3b8; font-size: 11px; min-width: 24px;"
-        )
+        self.stopped_pct_label.setFixedWidth(36)
+        self.stopped_pct_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
 
         stopped_layout.addWidget(self.stopped_chzzk_badge)
         stopped_layout.addWidget(self.stopped_retry_btn)
@@ -1007,7 +1056,12 @@ class TaskCardWidget(QFrame):
 
     def trigger_retry(self) -> None:
         """다시 시작(재시도) 시그널을 방출합니다 (공개 메서드)."""
+        self._detach_probe_worker()
         self.retry_requested.emit(self.task_id)
+
+    def detach_probe_worker(self) -> None:
+        """실행 중인 미디어 프로빙 워커를 안전하게 분리합니다 (공개 메서드)."""
+        self._detach_probe_worker()
 
     def trigger_complete(self) -> None:
         """현재 파일로 완료 확정 시그널을 방출합니다 (공개 메서드)."""
@@ -1064,20 +1118,56 @@ class TaskCardWidget(QFrame):
     def deleteLater(self) -> None:  # noqa: N802
         self.is_deleted = True
         self.close_info_window()
+        self.section_popup.hide()
         self.spinner.stop()
         if hasattr(self, "thumb_spinner") and not sip.isdeleted(self.thumb_spinner):
             self.thumb_spinner.stop()
         self._detach_thumb_loader()
+        self._detach_probe_worker()
         super().deleteLater()
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         self.is_deleted = True
         self.close_info_window()
+        self.section_popup.hide()
         self.spinner.stop()
         if hasattr(self, "thumb_spinner") and not sip.isdeleted(self.thumb_spinner):
             self.thumb_spinner.stop()
         self._detach_thumb_loader()
+        self._detach_probe_worker()
         super().closeEvent(event)
+
+    def _detach_probe_worker(self) -> None:
+        """실행 중인 미디어 프로빙 워커를 안전하게 분리하여 백그라운드 종료를 대기하도록 보존합니다."""
+        worker = self._probe_worker
+        self._probe_worker = None
+        if worker is not None:
+            if worker.isRunning():
+                try:
+                    worker.probed.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                try:
+                    worker.failed.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                try:
+                    worker.finished.disconnect(self._on_probe_finished)
+                except (TypeError, RuntimeError):
+                    pass
+                worker.setParent(None)
+                _DETACHED_PROBE_WORKERS.add(worker)
+                worker.finished.connect(
+                    lambda ref=worker: _DETACHED_PROBE_WORKERS.discard(ref)
+                )
+                worker.finished.connect(worker.deleteLater)
+                if worker.isFinished():
+                    _DETACHED_PROBE_WORKERS.discard(worker)
+
+    def attach_probe_worker(self, worker: Any) -> None:
+        """비동기 미디어 프로빙 워커를 카드에 등록합니다."""
+        self._detach_probe_worker()
+        self._probe_worker = worker
 
     def _load_thumbnail(self, url: str) -> None:
         """비동기로 썸네일 이미지를 다운로드하여 라벨에 표시합니다."""
@@ -1173,6 +1263,46 @@ class TaskCardWidget(QFrame):
             self.custom_download_dir = Path(selected).resolve()
             self.folder_btn.setToolTip(f"저장 폴더: {self.custom_download_dir}")
 
+    def _on_section_btn_clicked(self) -> None:
+        """구간 설정 팝업을 버튼 아래에 표시하거나 숨깁니다."""
+        if self.section_popup.isVisible():
+            self.section_popup.hide()
+        else:
+            self.section_popup.show_below(self.section_btn)
+
+    def _on_section_validity_changed(self, is_valid: bool) -> None:
+        """구간 설정 유효성에 따라 다운로드 시작 버튼 활성화 상태 및 3번 위치 영상 길이를 연동합니다."""
+        self.start_btn.setEnabled(is_valid)
+        if self.status == TaskStatus.READY:
+            self._update_display()
+
+    def _get_effective_duration(self) -> int:
+        """구간 설정이 적용되어 있으면 유효 구간 길이를, 아니면 원본 전체 길이를 반환합니다."""
+        if not self.vod_info:
+            return 0
+        total_dur = float(self.vod_info.duration)
+        if (
+            self._applied_section_start is not None
+            or self._applied_section_end is not None
+        ):
+            start_sec = (
+                self._applied_section_start
+                if self._applied_section_start is not None
+                else 0.0
+            )
+            end_sec = (
+                self._applied_section_end
+                if self._applied_section_end is not None
+                else total_dur
+            )
+            return max(0, int(round(end_sec - start_sec)))
+        s_start, s_end = self.section_popup.get_section_range()
+        if s_start is not None or s_end is not None:
+            start_sec = s_start if s_start is not None else 0.0
+            end_sec = s_end if s_end is not None else total_dur
+            return max(0, int(round(end_sec - start_sec)))
+        return int(round(total_dur))
+
     def _prompt_duplicate_resolution(self, filename: str) -> str:
         """동일 파일명 존재 시 처리 방법('overwrite', 'rename', 'cancel')을 묻는 대화상자를 띄웁니다."""
         msg_box = QMessageBox(self)
@@ -1209,11 +1339,39 @@ class TaskCardWidget(QFrame):
             or settings.default_quality
         )
         save_dir = self.custom_download_dir or settings.download_dir
+        s_start, s_end = self.section_popup.get_section_range()
         if self.vod_info:
-            filename = generate_vod_filename(self.vod_info, ext=ext)
+            filename = generate_vod_filename(
+                self.vod_info, ext=ext, section_start=s_start, section_end=s_end
+            )
             target = save_dir / filename
         else:
             target = save_dir
+
+        expected_bytes = 0
+        if self.vod_info:
+            dur = (
+                (s_end - s_start)
+                if (s_start is not None and s_end is not None)
+                else self.vod_info.duration
+            )
+            if dur and dur > 0:
+                tbr: float | None = None
+                for fmt in self.vod_info.formats:
+                    if fmt.format_id == quality or fmt.resolution == quality:
+                        if fmt.tbr and fmt.tbr > 0:
+                            tbr = fmt.tbr
+                            break
+                if tbr is None:
+                    if "1080" in quality:
+                        tbr = 6000.0
+                    elif "720" in quality:
+                        tbr = 3000.0
+                    elif "480" in quality:
+                        tbr = 1500.0
+                    else:
+                        tbr = 5000.0
+                expected_bytes = int(tbr * 1000 / 8 * dur)
 
         return TaskSpec(
             task_id=self.task_id,
@@ -1224,6 +1382,9 @@ class TaskCardWidget(QFrame):
             selected_quality=quality,
             selected_ext=ext,
             save_path=self.target_path or target,
+            section_start=s_start,
+            section_end=s_end,
+            expected_total_bytes=expected_bytes,
         )
 
     def set_task_status(self, status: TaskStatus) -> None:
@@ -1233,6 +1394,8 @@ class TaskCardWidget(QFrame):
         self.status = status
         if status == TaskStatus.DOWNLOADING:
             self._has_started_download = True
+            if self.section_popup.isVisible():
+                self.section_popup.hide()
         self._update_display()
         self._apply_style()
         if self.underMouse():
@@ -1249,9 +1412,74 @@ class TaskCardWidget(QFrame):
             self.final_file_path = Path(final_file_path)
         else:
             self.final_file_path = None
-        self.set_task_status(TaskStatus.COMPLETED)
+        if self._is_stopped:
+            self._trigger_media_probe()
+        if self.status != TaskStatus.COMPLETED:
+            self.set_task_status(TaskStatus.COMPLETED)
+        else:
+            self._update_display()
+            self._apply_style()
         if self.underMouse():
             self._show_hover_toolbar(True)
+
+    def _trigger_media_probe(self) -> None:
+        """R6 규칙을 준수하여 로컬 미디어 파일의 실제 duration과 size를 비동기 워커로 프로빙합니다."""
+        target = self.final_file_path or self.target_path
+        if not target:
+            return
+        p = Path(target)
+        try:
+            if not p.is_file() or p.stat().st_size < 1024:
+                return
+        except OSError:
+            return
+
+        from chzzk_downloader.core.ffmpeg_manager import (
+            check_media_container_magic_bytes,
+            is_ffmpeg_available,
+        )
+
+        if not is_ffmpeg_available(auto_download=False):
+            return
+
+        is_valid_media, _ = check_media_container_magic_bytes(p)
+        if not is_valid_media:
+            return
+
+        from chzzk_downloader.gui.workers import MediaProbeWorker
+
+        self._detach_probe_worker()
+
+        worker = MediaProbeWorker(self.task_id, p, parent=None)
+        worker.probed.connect(self._on_media_probed)
+        worker.finished.connect(self._on_probe_finished)
+        worker.finished.connect(worker.deleteLater)
+        self._probe_worker = worker
+        worker.start()
+
+    def _on_probe_finished(self) -> None:
+        """미디어 프로빙 워커 종료 시 핸들러."""
+        self._probe_worker = None
+
+    def _on_media_probed(self, task_id: str, duration: float, size: int) -> None:
+        """MediaProbeWorker의 프로빙 결과를 수신하여 3번 위치의 시간과 용량을 갱신합니다."""
+        if duration > 0:
+            dur_str = format_duration(int(round(duration)))
+            self._stopped_duration_str = dur_str
+            self.time_metric_label.setText(dur_str)
+            if self.status == TaskStatus.STOPPED:
+                self.status_label.setText(f"중지됨 ({dur_str})")
+            elif self.status == TaskStatus.COMPLETED:
+                file_size_str = self.size_metric_label.text()
+                if file_size_str and file_size_str != "--":
+                    self.status_label.setText(f"완료 ({dur_str} | {file_size_str})")
+                else:
+                    self.status_label.setText(f"완료 ({dur_str})")
+        if size > 0:
+            from chzzk_downloader.core.task_models import format_byte_size
+
+            size_str = format_byte_size(size)
+            self.size_metric_label.setText(size_str)
 
     def open_folder(self) -> None:
         """📁 폴더 열기: 탐색기를 열고 해당 파일을 선택(하이라이트)하거나 폴더를 엽니다."""
@@ -1429,7 +1657,10 @@ class TaskCardWidget(QFrame):
                 if hasattr(self, "ext_combo") and self.ext_combo.currentText()
                 else settings.file_extension
             )
-            filename = generate_vod_filename(self.vod_info, ext=ext)
+            s_start, s_end = self.section_popup.get_section_range()
+            filename = generate_vod_filename(
+                self.vod_info, ext=ext, section_start=s_start, section_end=s_end
+            )
             target = save_dir / filename
 
         filename_str = Path(target).name if target else "다운로드 파일"
@@ -1478,6 +1709,8 @@ class TaskCardWidget(QFrame):
 
     def trigger_start_download(self) -> bool:
         """다운로드 시작 트리거: 파일 중복 검사 후 DOWNLOADING 또는 QUEUED 상태 진입을 요청합니다."""
+        if self.section_popup.isVisible():
+            self.section_popup.hide()
         if self.status != TaskStatus.READY:
             return False
         if not self.vod_info:
@@ -1499,12 +1732,20 @@ class TaskCardWidget(QFrame):
             self.download_blocked.emit(f"저장 폴더를 생성할 수 없습니다: {e}")
             return False
 
-        ext = (
-            self.ext_combo.currentText()
-            if hasattr(self, "ext_combo") and self.ext_combo.currentText()
-            else settings.file_extension
+        s_start, s_end = self.section_popup.get_section_range()
+        if s_start is not None or s_end is not None:
+            from chzzk_downloader.core.section_parser import validate_section
+
+            try:
+                validate_section(s_start, s_end, duration=float(self.vod_info.duration))
+            except ValueError as e:
+                self.download_blocked.emit(f"⚠️ 올바른 구간을 입력해주세요: {e}")
+                return False
+
+        ext = self.ext_combo.currentText() or settings.file_extension
+        filename = generate_vod_filename(
+            self.vod_info, ext=ext, section_start=s_start, section_end=s_end
         )
-        filename = generate_vod_filename(self.vod_info, ext=ext)
         target_path = save_dir / filename
 
         # 동일한 파일명이 이미 존재할 경우 (옵션 A)
@@ -1518,6 +1759,13 @@ class TaskCardWidget(QFrame):
                 return False
         else:
             final_path = target_path
+
+        self.section_popup.hide()
+
+        self._stopped_duration_str = None
+        self._is_stopped = False
+        self._applied_section_start = s_start
+        self._applied_section_end = s_end
 
         self.target_path = final_path
         if self.quality_combo.currentText():
@@ -1564,12 +1812,18 @@ class TaskCardWidget(QFrame):
 
     def reset_for_redownload(self) -> None:
         """동일 VOD 재입력 시 이전 세션 리소스 정리 및 클린 리셋 (충돌 방어 및 최신 설정 반영)."""
+        self._detach_thumb_loader()
+        self._detach_probe_worker()
         self.error_message = ""
         self.error_type = ""
         self.traceback_str = ""
         self.final_file_path = None
         self._has_started_download = False
         self._stopped_without_file = False
+        self._stopped_duration_str = None
+        self._is_stopped = False
+        self._applied_section_start = None
+        self._applied_section_end = None
         self.selected_quality = ""
         self.custom_download_dir = None
         self.target_path = None
@@ -1584,6 +1838,8 @@ class TaskCardWidget(QFrame):
             self.ext_combo.blockSignals(True)
             self.ext_combo.setCurrentText(settings.file_extension)
             self.ext_combo.blockSignals(False)
+
+        self.section_popup.reset()
 
         self.status = TaskStatus.ANALYZING
         self._update_display()
@@ -1627,7 +1883,8 @@ class TaskCardWidget(QFrame):
             self.status_label.show()
             if self.vod_info:
                 self.title_label.setText(self.vod_info.display_name)
-                dur_str = format_duration(self.vod_info.duration)
+                dur = self._get_effective_duration()
+                dur_str = format_duration(dur)
                 quality_str = self.selected_quality or self.quality_combo.currentText()
                 self.status_label.setText(
                     f"{quality_str} | {dur_str}" if quality_str else dur_str
@@ -1667,7 +1924,11 @@ class TaskCardWidget(QFrame):
                 self.vod_metrics_widget.hide()
             self.status_label.hide()
 
-            dur_str = format_duration(self.vod_info.duration) if self.vod_info else ""
+            if self._is_stopped and self._stopped_duration_str:
+                dur_str = self._stopped_duration_str
+            else:
+                dur = self._get_effective_duration()
+                dur_str = format_duration(dur) if dur > 0 else ""
             file_size_str = ""
             target = (
                 getattr(self, "final_file_path", None)
@@ -1745,18 +2006,22 @@ class TaskCardWidget(QFrame):
                 and self.vod_info
                 and self.vod_info.duration > 0
             ):
+                effective_total = self._get_effective_duration()
+                base_duration = (
+                    effective_total if effective_total > 0 else self.vod_info.duration
+                )
                 actual_sec = int(
-                    self.vod_info.duration * (self.last_progress.percentage / 100.0)
+                    base_duration * (self.last_progress.percentage / 100.0)
                 )
                 dur_str = format_duration(actual_sec)
             elif self.last_progress and self.last_progress.elapsed_str:
                 dur_str = self.last_progress.elapsed_str
             else:
-                dur_str = (
-                    format_duration(self.vod_info.duration)
-                    if self.vod_info
-                    else "00:00"
-                )
+                dur = self._get_effective_duration()
+                dur_str = format_duration(dur) if dur > 0 else "00:00"
+
+            self._stopped_duration_str = dur_str
+
             file_size_str = ""
             target = (
                 getattr(self, "final_file_path", None)
@@ -1792,6 +2057,9 @@ class TaskCardWidget(QFrame):
             if not (self.vod_info and self.vod_info.thumbnail_url):
                 self.thumb_label.setText("중지")
 
+            self._is_stopped = True
+            self._trigger_media_probe()
+
         elif self.status == TaskStatus.DOWNLOADING:
             self.status_label.hide()
             if hasattr(self, "downloading_metrics_widget"):
@@ -1816,6 +2084,10 @@ class TaskCardWidget(QFrame):
                 self.live_recording_container.hide()
                 self.vod_downloading_container.show()
                 self.progress_bar.show()
+                if self.is_section_download:
+                    self.stop_btn.hide()
+                else:
+                    self.stop_btn.show()
                 if hasattr(self, "icon_metrics_widget"):
                     self.icon_metrics_widget.hide()
                 if hasattr(self, "vod_metrics_widget"):
@@ -1988,6 +2260,13 @@ class TaskCardWidget(QFrame):
             self.ext_combo.blockSignals(True)
             self.ext_combo.setCurrentText(settings.file_extension)
             self.ext_combo.blockSignals(False)
+
+        if info.can_section_download:
+            self.section_btn.show()
+            self.section_popup.set_duration(float(info.duration))
+        else:
+            self.section_btn.hide()
+
         self._update_display()
         self._apply_style()
         if info.thumbnail_url:

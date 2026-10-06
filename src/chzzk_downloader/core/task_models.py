@@ -103,3 +103,6 @@ class TaskSpec:
     selected_quality: str = ""
     selected_ext: str = "mp4"
     save_path: Path | str = ""
+    section_start: float | None = None
+    section_end: float | None = None
+    expected_total_bytes: int = 0
